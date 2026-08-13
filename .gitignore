@@ -1,0 +1,42 @@
+# Virtual Environment
+backend/venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node modules & Next.js build
+frontend/node_modules/
+node_modules/
+frontend/.next/
+.next/
+frontend/out/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+larp_checker.db
+backend/larp_checker.db
+
+# Environment variables & secrets
+.env
+backend/.env
+frontend/.env.local
+*.env.local
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test coverage & caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local scripts
+build_history.py
