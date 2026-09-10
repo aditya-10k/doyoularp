@@ -145,8 +145,6 @@ class GroqClient:
                 "groq/compound-mini",
                 "openai/gpt-oss-120b",
                 "groq/compound",
-                "qwen/qwen3.6-27b",
-                "qwen/qwen3.8-27b",
             ]:
                 if fb not in models_to_try:
                     models_to_try.append(fb)
@@ -161,13 +159,8 @@ class GroqClient:
                     "messages": messages,
                     "temperature": temperature,
                     "model": candidate_model,
+                    "max_tokens": min(max_tokens or 2000, 3000),
                 }
-
-                # Enforce safe output token limits per model tier
-                if "qwen/qwen3.8-27b" in candidate_model.lower():
-                    base_kwargs["max_tokens"] = min(max_tokens or 750, 850)
-                else:
-                    base_kwargs["max_tokens"] = min(max_tokens or 1500, 2500)
 
                 # If json_mode requested, attempt with response_format first, but if Groq's
                 # schema validator rejects with json_validate_failed (400), retry without response_format
@@ -282,8 +275,6 @@ class GroqClient:
                 "groq/compound-mini",
                 "openai/gpt-oss-120b",
                 "groq/compound",
-                "qwen/qwen3.6-27b",
-                "qwen/qwen3.8-27b",
             ]
             seen = set()
             messages = [
@@ -299,23 +290,29 @@ class GroqClient:
                     "messages": messages,
                     "temperature": temperature,
                     "model": candidate_model,
+                    "max_tokens": min(max_tokens or 2000, 3000),
                 }
-                if "qwen/qwen3.8-27b" in candidate_model.lower():
-                    base_kwargs["max_tokens"] = min(max_tokens or 750, 850)
-                elif max_tokens:
-                    base_kwargs["max_tokens"] = max_tokens
-                if json_mode:
-                    base_kwargs["response_format"] = {"type": "json_object"}
 
-                try:
-                    response = await client.chat.completions.create(**base_kwargs)
-                    content = response.choices[0].message.content
-                    if content and content.strip():
-                        logger.info(f"Successfully received response from user Groq key with {candidate_model}")
-                        return content.strip()
-                except Exception as e:
-                    logger.warning(f"User Groq key on {candidate_model} failed: {e}")
-                    continue
+                modes = [True, False] if json_mode else [False]
+                for try_json in modes:
+                    kwargs = dict(base_kwargs)
+                    if try_json:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    try:
+                        response = await client.chat.completions.create(**kwargs)
+                        content = response.choices[0].message.content
+                        if content and content.strip():
+                            logger.info(f"Successfully received response from user Groq key with {candidate_model}")
+                            return content.strip()
+                    except Exception as e:
+                        err_str = str(e)
+                        if try_json and ("json_validate_failed" in err_str or "Failed to generate JSON" in err_str):
+                            logger.warning(
+                                f"User Groq key on {candidate_model} returned json_validate_failed. Retrying without response_format..."
+                            )
+                            continue
+                        logger.warning(f"User Groq key on {candidate_model} failed: {e}")
+                        break
         except Exception as e:
             logger.warning(f"Failed to initialize AsyncGroq with user custom key: {e}")
         return None
@@ -335,13 +332,12 @@ class GroqClient:
             return None
 
         models = [
-            settings.OPENROUTER_MODEL or "meta-llama/llama-3.3-70b-instruct:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemini-2.0-flash-exp:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-            "mistralai/mistral-7b-instruct:free",
-            "qwen/qwen-2.5-coder-32b-instruct:free",
+            settings.OPENROUTER_MODEL or "google/gemma-4-31b-it:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
             "nvidia/nemotron-3.5-lightning:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "liquid/lfm-2.5-2.6b:free",
         ]
         headers = {
             "Authorization": f"Bearer {effective_key}",
@@ -404,11 +400,13 @@ class GroqClient:
             return None
 
         models = [
-            settings.GEMINI_MODEL or "gemini-2.0-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
-            "gemini-1.5-pro",
+            settings.GEMINI_MODEL or "gemini-3.6-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.7-flash",
+            "gemini-flash-latest",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash",
         ]
 
         seen = set()
@@ -436,9 +434,11 @@ class GroqClient:
                         candidates = data.get("candidates", [])
                         if candidates:
                             parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts and "text" in parts[0]:
-                                logger.info(f"Successfully received response from Gemini model: {model}")
-                                return parts[0]["text"]
+                            if parts:
+                                for part in reversed(parts):
+                                    if isinstance(part, dict) and "text" in part and part["text"].strip():
+                                        logger.info(f"Successfully received response from Gemini model: {model}")
+                                        return part["text"].strip()
                     else:
                         logger.warning(f"Gemini {model} returned status {resp.status_code}: {resp.text[:150]}")
             except Exception as e:

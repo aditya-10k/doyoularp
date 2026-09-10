@@ -29,14 +29,14 @@ const PROVIDERS: { id: ProviderType; name: string; desc: string; freeTier: strin
   {
     id: "gemini",
     name: "Google Gemini",
-    desc: "1M token context window and high throughput (gemini-2.0-flash).",
+    desc: "1M token context window and high throughput (gemini-3.6-flash).",
     freeTier: "Free tier at aistudio.google.com",
     placeholder: "AIzaSy...",
   },
   {
     id: "openrouter",
     name: "OpenRouter",
-    desc: "Access to free open-weights models (llama-3.3-70b-instruct:free).",
+    desc: "Access to free open-weights models (google/gemma-4-31b-it:free).",
     freeTier: "Free tier at openrouter.ai",
     placeholder: "sk-or-...",
   },

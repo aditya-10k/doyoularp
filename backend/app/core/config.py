@@ -21,10 +21,10 @@ class Settings(BaseSettings):
 
     # Multi-Provider AI Support (Groq, OpenRouter, Gemini, OpenAI, Mistral, Anthropic)
     OPENROUTER_API_KEY: Optional[str] = None
-    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+    OPENROUTER_MODEL: str = "google/gemma-4-31b-it:free"
 
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
