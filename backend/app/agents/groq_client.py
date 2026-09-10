@@ -27,15 +27,27 @@ class GroqClient:
         model: Optional[str] = None,
         user_api_key: Optional[str] = None,
         user_provider: Optional[str] = None,
+        user_keys: Optional[List[Dict[str, str]]] = None,
     ):
-        self.user_api_key = user_api_key.strip() if user_api_key and user_api_key.strip() else None
-        self.user_provider = (user_provider or "groq").lower().strip() if self.user_api_key else None
+        self.user_keys: List[Dict[str, str]] = []
+        if user_keys:
+            for k in user_keys:
+                if isinstance(k, dict) and k.get("api_key") and str(k.get("api_key")).strip():
+                    self.user_keys.append({
+                        "provider": str(k.get("provider", "groq")).lower().strip(),
+                        "api_key": str(k.get("api_key")).strip(),
+                    })
+        elif user_api_key and user_api_key.strip():
+            self.user_keys.append({
+                "provider": (user_provider or "groq").lower().strip(),
+                "api_key": user_api_key.strip(),
+            })
 
-        effective_groq_key = (
-            self.user_api_key
-            if (self.user_api_key and self.user_provider == "groq")
-            else (api_key if api_key is not None else settings.GROQ_API_KEY)
-        )
+        self.user_api_key = self.user_keys[0]["api_key"] if self.user_keys else None
+        self.user_provider = self.user_keys[0]["provider"] if self.user_keys else None
+
+        first_groq_key = next((k["api_key"] for k in self.user_keys if k["provider"] == "groq"), None)
+        effective_groq_key = first_groq_key if first_groq_key else (api_key if api_key is not None else settings.GROQ_API_KEY)
         self.api_key = effective_groq_key
         self.model = model or settings.GROQ_MODEL
         self._client: Optional[AsyncGroq] = None
@@ -46,7 +58,7 @@ class GroqClient:
     def is_configured(self) -> bool:
         """Returns True if ANY supported AI provider has an API key configured or user provided one."""
         return bool(
-            self.user_api_key
+            len(self.user_keys) > 0
             or self.api_key
             or settings.OPENROUTER_API_KEY
             or settings.GEMINI_API_KEY
@@ -65,7 +77,7 @@ class GroqClient:
     ) -> str:
         """
         Sends completion request across configured AI providers in resilient cascade:
-        0. User-supplied priority provider (if configured)
+        0. User-supplied priority keys (in order of priority across providers)
         1. Groq (with active model fleet & safe OTPM token limits)
         2. OpenRouter (free tier / configured models)
         3. Google Gemini
@@ -85,29 +97,45 @@ class GroqClient:
                 "GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY."
             )
 
-        # 0. Try user-supplied priority provider first if non-groq
-        if self.user_api_key and self.user_provider:
-            if self.user_provider == "gemini":
-                logger.info("Prioritizing user-provided Gemini API key...")
-                resp = await self._try_gemini(
-                    system_prompt, user_prompt, temperature, json_mode, custom_key=self.user_api_key
-                )
-                if resp:
-                    return resp
-            elif self.user_provider == "openrouter":
-                logger.info("Prioritizing user-provided OpenRouter API key...")
-                resp = await self._try_openrouter(
-                    system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=self.user_api_key
-                )
-                if resp:
-                    return resp
-            elif self.user_provider == "openai":
-                logger.info("Prioritizing user-provided OpenAI API key...")
-                resp = await self._try_openai(
-                    system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=self.user_api_key
-                )
-                if resp:
-                    return resp
+        # 0. Try user-supplied keys in order
+        if self.user_keys:
+            for idx, user_k in enumerate(self.user_keys):
+                u_provider = user_k.get("provider", "groq")
+                u_key = user_k.get("api_key", "")
+                if not u_key:
+                    continue
+
+                try:
+                    if u_provider == "gemini":
+                        logger.info(f"Trying user-provided Gemini key (#{idx + 1})...")
+                        resp = await self._try_gemini(
+                            system_prompt, user_prompt, temperature, json_mode, custom_key=u_key
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "openrouter":
+                        logger.info(f"Trying user-provided OpenRouter key (#{idx + 1})...")
+                        resp = await self._try_openrouter(
+                            system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=u_key
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "openai":
+                        logger.info(f"Trying user-provided OpenAI key (#{idx + 1})...")
+                        resp = await self._try_openai(
+                            system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=u_key
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "groq":
+                        logger.info(f"Trying user-provided Groq key (#{idx + 1})...")
+                        resp = await self._try_groq_custom_key(
+                            u_key, system_prompt, user_prompt, temperature, json_mode, max_tokens
+                        )
+                        if resp:
+                            return resp
+                except Exception as e:
+                    logger.warning(f"User key #{idx + 1} ({u_provider}) failed: {e}. Trying next key...")
 
         # 1. Try Groq (if configured)
         if self._client:
@@ -235,6 +263,62 @@ class GroqClient:
         raise GroqRateLimitError(
             "Analysis halted: All configured AI providers rate limited or unavailable. Please retry in a few moments."
         )
+
+    async def _try_groq_custom_key(
+        self,
+        custom_key: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+    ) -> Optional[str]:
+        """Try Groq models using user-supplied custom key."""
+        try:
+            client = AsyncGroq(api_key=custom_key)
+            models_to_try = [
+                self.model,
+                "openai/gpt-oss-20b",
+                "groq/compound-mini",
+                "openai/gpt-oss-120b",
+                "groq/compound",
+                "qwen/qwen3.6-27b",
+                "qwen/qwen3.8-27b",
+            ]
+            seen = set()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            for candidate_model in models_to_try:
+                if candidate_model in seen:
+                    continue
+                seen.add(candidate_model)
+
+                base_kwargs: Dict[str, Any] = {
+                    "messages": messages,
+                    "temperature": temperature,
+                    "model": candidate_model,
+                }
+                if "qwen/qwen3.8-27b" in candidate_model.lower():
+                    base_kwargs["max_tokens"] = min(max_tokens or 750, 850)
+                elif max_tokens:
+                    base_kwargs["max_tokens"] = max_tokens
+                if json_mode:
+                    base_kwargs["response_format"] = {"type": "json_object"}
+
+                try:
+                    response = await client.chat.completions.create(**base_kwargs)
+                    content = response.choices[0].message.content
+                    if content and content.strip():
+                        logger.info(f"Successfully received response from user Groq key with {candidate_model}")
+                        return content.strip()
+                except Exception as e:
+                    logger.warning(f"User Groq key on {candidate_model} failed: {e}")
+                    continue
+        except Exception as e:
+            logger.warning(f"Failed to initialize AsyncGroq with user custom key: {e}")
+        return None
 
     async def _try_openrouter(
         self,

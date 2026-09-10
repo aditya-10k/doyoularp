@@ -30,16 +30,33 @@ export default function Home() {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [hasCustomKey, setHasCustomKey] = useState(false);
+  const [customKeyCount, setCustomKeyCount] = useState<number>(0);
 
   // Check custom key and prompt on initial site opening
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const key = localStorage.getItem("doyoularp_user_api_key");
+      const keysRaw = localStorage.getItem("doyoularp_user_keys");
       const promptSeen = localStorage.getItem("doyoularp_api_prompt_seen");
-      if (key && key.trim()) {
+      let count = 0;
+      if (keysRaw) {
+        try {
+          const parsed = JSON.parse(keysRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            count = parsed.length;
+          }
+        } catch {}
+      }
+      if (count === 0) {
+        const legacyKey = localStorage.getItem("doyoularp_user_api_key");
+        if (legacyKey && legacyKey.trim()) {
+          count = 1;
+        }
+      }
+
+      if (count > 0) {
         setHasCustomKey(true);
+        setCustomKeyCount(count);
       } else if (!promptSeen) {
-        // Open popup automatically on first visit to facilitate key setup
         setShowApiKeyModal(true);
       }
     }
@@ -47,8 +64,21 @@ export default function Home() {
 
   const refreshKeyStatus = () => {
     if (typeof window !== "undefined") {
-      const key = localStorage.getItem("doyoularp_user_api_key");
-      setHasCustomKey(Boolean(key && key.trim()));
+      const keysRaw = localStorage.getItem("doyoularp_user_keys");
+      if (keysRaw) {
+        try {
+          const parsed = JSON.parse(keysRaw);
+          if (Array.isArray(parsed)) {
+            setCustomKeyCount(parsed.length);
+            setHasCustomKey(parsed.length > 0);
+            return;
+          }
+        } catch {}
+      }
+      const legacyKey = localStorage.getItem("doyoularp_user_api_key");
+      const hasKey = Boolean(legacyKey && legacyKey.trim());
+      setHasCustomKey(hasKey);
+      setCustomKeyCount(hasKey ? 1 : 0);
     }
   };
 
@@ -134,13 +164,15 @@ export default function Home() {
           onClick={() => setShowApiKeyModal(true)}
           className={`flex items-center gap-2 border px-3 py-1.5 sm:px-3.5 sm:py-2 font-mono text-xs uppercase tracking-wider backdrop-blur-md transition-all ${
             hasCustomKey
-              ? "border-cyan-500/70 bg-cyan-950/50 text-cyan-300 hover:border-cyan-400 hover:bg-cyan-900/60"
+              ? "border-red-600/70 bg-red-950/50 text-red-300 hover:border-red-500 hover:bg-red-900/70"
               : "border-zinc-800 bg-black/80 text-zinc-400 hover:border-zinc-600 hover:text-white"
           }`}
         >
-          <Key className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${hasCustomKey ? "text-cyan-400" : "text-zinc-400"}`} />
-          <span className="hidden sm:inline">{hasCustomKey ? "KEY: ACTIVE" : "CUSTOM KEY"}</span>
-          <span className="sm:hidden">{hasCustomKey ? "KEY" : "KEY"}</span>
+          <Key className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${hasCustomKey ? "text-red-500" : "text-zinc-400"}`} />
+          <span className="hidden sm:inline">
+            {hasCustomKey ? `KEYS: ${customKeyCount} ACTIVE` : "CUSTOM KEYS"}
+          </span>
+          <span className="sm:hidden">{hasCustomKey ? `KEYS (${customKeyCount})` : "KEYS"}</span>
         </button>
 
         <button

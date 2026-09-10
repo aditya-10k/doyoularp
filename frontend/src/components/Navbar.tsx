@@ -44,12 +44,12 @@ export default function Navbar({ onOpenLeaderboard, onReset, onOpenApiKeyModal, 
               onClick={onOpenApiKeyModal}
               className={`flex items-center gap-2 border px-3.5 py-1.5 font-mono text-xs uppercase tracking-wider transition-all ${
                 hasCustomKey
-                  ? "border-cyan-500/70 bg-cyan-950/30 text-cyan-300 hover:border-cyan-400 hover:bg-cyan-900/40"
+                  ? "border-red-600/70 bg-red-950/40 text-red-300 hover:border-red-500 hover:bg-red-900/60"
                   : "border-zinc-700 bg-zinc-900/60 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
               }`}
             >
-              <Key className={`h-3.5 w-3.5 ${hasCustomKey ? "text-cyan-400" : "text-zinc-400"}`} />
-              <span>{hasCustomKey ? "API KEY: ACTIVE" : "API KEY"}</span>
+              <Key className={`h-3.5 w-3.5 ${hasCustomKey ? "text-red-500" : "text-zinc-400"}`} />
+              <span>{hasCustomKey ? "API KEYS: ACTIVE" : "API KEYS"}</span>
             </button>
           )}
 

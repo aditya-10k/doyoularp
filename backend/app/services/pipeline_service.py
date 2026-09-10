@@ -150,6 +150,7 @@ class PipelineService:
         db: AsyncSession,
         user_api_key: Optional[str] = None,
         user_provider: Optional[str] = None,
+        user_keys: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         """Full end-to-end processing pipeline across all 13 stages."""
         analysis = await db.get(Analysis, analysis_id)
@@ -161,9 +162,13 @@ class PipelineService:
         evaluation_agent = self.evaluation_agent
         roast_agent = self.roast_agent
 
-        if user_api_key and user_api_key.strip():
-            logger.info("Configuring analysis with user-provided API key and provider...")
-            custom_groq = GroqClient(user_api_key=user_api_key.strip(), user_provider=user_provider)
+        if (user_keys and len(user_keys) > 0) or (user_api_key and user_api_key.strip()):
+            logger.info("Configuring analysis with user-provided API keys...")
+            custom_groq = GroqClient(
+                user_api_key=user_api_key.strip() if user_api_key else None,
+                user_provider=user_provider,
+                user_keys=user_keys,
+            )
             claim_extractor = ClaimExtractor(groq_client=custom_groq)
             evaluation_agent = EvaluationAgent(groq_client=custom_groq)
             roast_agent = RoastAgent(groq_client=custom_groq)

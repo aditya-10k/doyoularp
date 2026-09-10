@@ -25,13 +25,37 @@ export async function uploadResume(analysisId: string, file: File): Promise<void
 
   const headers: Record<string, string> = {};
   if (typeof window !== "undefined") {
-    const userApiKey = localStorage.getItem("doyoularp_user_api_key");
-    const userProvider = localStorage.getItem("doyoularp_user_provider");
-    if (userApiKey && userApiKey.trim()) {
-      headers["X-User-Api-Key"] = userApiKey.trim();
+    const userKeysRaw = localStorage.getItem("doyoularp_user_keys");
+    if (userKeysRaw) {
+      try {
+        const parsed = JSON.parse(userKeysRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const payload = parsed
+            .filter((item: any) => item.key && item.key.trim())
+            .map((item: any) => ({
+              provider: item.provider || "groq",
+              api_key: item.key.trim(),
+            }));
+          if (payload.length > 0) {
+            headers["X-User-Api-Keys"] = JSON.stringify(payload);
+            headers["X-User-Api-Key"] = payload[0].api_key;
+            headers["X-User-Provider"] = payload[0].provider;
+          }
+        }
+      } catch {
+        // Fall back to individual keys
+      }
     }
-    if (userProvider && userProvider.trim()) {
-      headers["X-User-Provider"] = userProvider.trim();
+
+    if (!headers["X-User-Api-Key"]) {
+      const userApiKey = localStorage.getItem("doyoularp_user_api_key");
+      const userProvider = localStorage.getItem("doyoularp_user_provider");
+      if (userApiKey && userApiKey.trim()) {
+        headers["X-User-Api-Key"] = userApiKey.trim();
+      }
+      if (userProvider && userProvider.trim()) {
+        headers["X-User-Provider"] = userProvider.trim();
+      }
     }
   }
 

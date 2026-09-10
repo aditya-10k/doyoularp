@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func, select
@@ -49,10 +49,17 @@ async def _run_pipeline_background(
     pdf_bytes: bytes,
     user_api_key: Optional[str] = None,
     user_provider: Optional[str] = None,
+    user_keys: Optional[List[Dict[str, str]]] = None,
 ) -> None:
     async with async_session_maker() as db:
         await pipeline_service.run_pipeline(
-            analysis_id, filename, pdf_bytes, db, user_api_key=user_api_key, user_provider=user_provider
+            analysis_id,
+            filename,
+            pdf_bytes,
+            db,
+            user_api_key=user_api_key,
+            user_provider=user_provider,
+            user_keys=user_keys,
         )
 
 
@@ -85,6 +92,7 @@ async def upload_resume(
     file: UploadFile = File(...),
     x_user_api_key: Optional[str] = Header(None, alias="X-User-Api-Key"),
     x_user_provider: Optional[str] = Header(None, alias="X-User-Provider"),
+    x_user_api_keys: Optional[str] = Header(None, alias="X-User-Api-Keys"),
     db: AsyncSession = Depends(get_db),
 ) -> ResumeUploadResponse:
     """Uploads resume PDF and kicks off the asynchronous 13-stage analysis pipeline."""
@@ -104,7 +112,36 @@ async def upload_resume(
             detail=f"File exceeds maximum allowed size ({settings.MAX_PDF_SIZE_BYTES // (1024*1024)}MB)",
         )
 
-    # Queue background task for analysis with optional user-supplied API key
+    # Parse optional multi-key configuration
+    user_keys_list: List[Dict[str, str]] = []
+    if x_user_api_keys:
+        try:
+            parsed = json.loads(x_user_api_keys)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict) and item.get("api_key"):
+                        user_keys_list.append({
+                            "provider": str(item.get("provider", "groq")).lower().strip(),
+                            "api_key": str(item.get("api_key")).strip(),
+                        })
+            elif isinstance(parsed, dict):
+                for prov, key_val in parsed.items():
+                    if isinstance(key_val, list):
+                        for single_k in key_val:
+                            if single_k:
+                                user_keys_list.append({"provider": str(prov).lower().strip(), "api_key": str(single_k).strip()})
+                    elif key_val:
+                        user_keys_list.append({"provider": str(prov).lower().strip(), "api_key": str(key_val).strip()})
+        except Exception:
+            pass
+
+    if not user_keys_list and x_user_api_key and x_user_api_key.strip():
+        user_keys_list.append({
+            "provider": (x_user_provider or "groq").lower().strip(),
+            "api_key": x_user_api_key.strip(),
+        })
+
+    # Queue background task for analysis with optional user-supplied API keys
     background_tasks.add_task(
         _run_pipeline_background,
         analysis_id=analysis.id,
@@ -112,6 +149,7 @@ async def upload_resume(
         pdf_bytes=pdf_bytes,
         user_api_key=x_user_api_key,
         user_provider=x_user_provider,
+        user_keys=user_keys_list if user_keys_list else None,
     )
 
     return ResumeUploadResponse(
