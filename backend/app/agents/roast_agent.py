@@ -15,6 +15,7 @@ CRITICAL MANDATES:
 4. IN "verdict_summary": Provide a scathing, clinical post-mortem of their technical delusions and reality disconnect.
 5. IN "funny_mismatch": Deliver a lethal, quotable one-liner contrasting their grandiose resume claim against the pitiful GitHub reality.
 6. IF LEGIT: If (and only if) every single claim has matching receipts, write a grudging, sarcastic admission of competence (e.g., "Annoyingly, the receipts exist. Go touch grass.").
+7. IF NO GITHUB: If no GitHub repository or profile link was provided in the resume (has_github = false), you MUST include this exact, brutal reality check: "No GitHub link found. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you." Shred them for claiming software engineering feats without daring to attach a single code receipt.
 
 Return ONLY a JSON object:
 {
@@ -36,8 +37,31 @@ class RoastAgent:
         larp_score: float,
         evaluations: List[Dict[str, Any]],
         repos: Optional[List[Dict[str, Any]]] = None,
+        has_github: bool = True,
     ) -> Dict[str, Any]:
         """Deterministic extensive roast and slander generator for fallback or testing."""
+        if not has_github:
+            overall = (
+                "No GitHub link found anywhere in this resume. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+                "You had the audacity to submit a technical engineering resume loaded with project claims, architectural buzzwords, and claimed proficiencies, yet you could not produce a single public GitHub link, repository, or commit receipt. "
+                "In an industry where the only real proof of competence is running code, you decided that your word alone was worth six figures.\n\n"
+                "There are no commit timestamps. There are no pull requests. There are no Docker containers. There is only a PDF document constructed from pure LinkedIn fiction and wishful thinking. "
+                "If you want to be taken seriously as an engineer, publish your code. Until then, you are simply roleplaying in a developer costume."
+            )
+            verdict_sum = (
+                "FATAL PHANTOM DETECTED: No GitHub link found in resume. "
+                "Go and make TikToks, pray you get diversity hired, or hope your interviewer is as dumb as you. 100% unverified buzzword fiction."
+            )
+            funny = "No GitHub link found: Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you."
+            weakest = "Zero GitHub profile or repository links provided in resume"
+            return {
+                "overall_roast": overall,
+                "verdict_summary": verdict_sum,
+                "strongest_claim": "None",
+                "weakest_claim": weakest,
+                "funny_mismatch": funny,
+            }
+
         supported = [e for e in evaluations if e.get("verdict") == "SUPPORTED"]
         unverified = [e for e in evaluations if e.get("verdict") == "UNVERIFIED"]
         contradicted = [e for e in evaluations if e.get("verdict") == "CONTRADICTED"]
@@ -102,16 +126,23 @@ class RoastAgent:
         evaluations: List[Dict[str, Any]],
         repos: Optional[List[Dict[str, Any]]] = None,
         intensity: int = 3,
+        has_github: bool = True,
     ) -> Dict[str, Any]:
         """Generates extended slanderous roast using Groq with deterministic fallback."""
         if not self.groq.is_configured or intensity == 0:
-            return self._fallback_roast(larp_score, evaluations, repos)
+            return self._fallback_roast(larp_score, evaluations, repos, has_github=has_github)
 
         try:
             prompt_data = {
                 "larp_score": larp_score,
+                "has_github": has_github,
                 "intensity": intensity,
                 "repositories_count": len(repos) if repos else 0,
+                "missing_github_alert": (
+                    "CRITICAL MANDATE: NO GITHUB LINK FOUND IN RESUME. "
+                    "You MUST include this explicit roast in the text: 'Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.' "
+                    "Tear them apart for submitting a technical resume with no code provenance whatsoever."
+                ) if not has_github else None,
                 "repositories_summary": [
                     {
                         "name": r.get("name"),
@@ -139,14 +170,28 @@ class RoastAgent:
             )
 
             data = self.groq.extract_json(response_text)
+
+            overall_roast = data.get("overall_roast", "No roast available.")
+            verdict_summary = data.get("verdict_summary", "Evaluation complete.")
+            funny_mismatch = data.get("funny_mismatch")
+            weakest_claim = data.get("weakest_claim") or ("Zero GitHub links provided" if not has_github else None)
+
+            if not has_github:
+                punchline = "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you."
+                lead_line = f"No GitHub link found anywhere in this resume. {punchline}"
+                if not overall_roast.strip().startswith("No GitHub link found"):
+                    overall_roast = f"{lead_line}\n\n{overall_roast}"
+                funny_mismatch = f"No GitHub link found: {punchline}"
+                verdict_summary = f"FATAL PHANTOM DETECTED: No GitHub link found in resume. {punchline} 100% unverified buzzwords."
+
             return {
-                "overall_roast": data.get("overall_roast", "No roast available."),
-                "verdict_summary": data.get("verdict_summary", "Evaluation complete."),
-                "strongest_claim": data.get("strongest_claim"),
-                "weakest_claim": data.get("weakest_claim"),
-                "funny_mismatch": data.get("funny_mismatch"),
+                "overall_roast": overall_roast,
+                "verdict_summary": verdict_summary,
+                "strongest_claim": data.get("strongest_claim") if has_github else "None",
+                "weakest_claim": weakest_claim,
+                "funny_mismatch": funny_mismatch,
             }
         except GroqRateLimitError:
             raise
         except Exception:
-            return self._fallback_roast(larp_score, evaluations, repos)
+            return self._fallback_roast(larp_score, evaluations, repos, has_github=has_github)

@@ -538,7 +538,13 @@ class PipelineService:
             analysis.progress = 95
             await db.commit()
 
-            score_data = calculate_larp_score(eval_results_for_scoring, collected_repos_data)
+            has_github_source = any(s.type == "github" for s in discovered_sources)
+
+            score_data = calculate_larp_score(
+                eval_results_for_scoring,
+                collected_repos_data,
+                has_github=has_github_source,
+            )
             larp_score = score_data["larp_score"]
 
             roast_data = await self.roast_agent.generate_roast(
@@ -546,10 +552,17 @@ class PipelineService:
                 evaluations=eval_results_for_scoring,
                 repos=collected_repos_data,
                 intensity=settings.ROAST_INTENSITY,
+                has_github=has_github_source,
             )
 
             candidate = await db.get(Candidate, analysis.candidate_id)
             alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
+
+            summary_payload = json.dumps({
+                "verdict_summary": roast_data.get("verdict_summary"),
+                "funny_mismatch": roast_data.get("funny_mismatch"),
+                "weakest_claim": roast_data.get("weakest_claim"),
+            })
 
             # Check if leaderboard entry already exists
             stmt_existing = select(LeaderboardEntry).where(LeaderboardEntry.analysis_id == analysis.id)
@@ -559,14 +572,14 @@ class PipelineService:
             if existing_entry:
                 existing_entry.larp_score = larp_score
                 existing_entry.roast = roast_data.get("overall_roast", "No roast available.")
-                existing_entry.summary = roast_data.get("verdict_summary")
+                existing_entry.summary = summary_payload
             else:
                 leaderboard_entry = LeaderboardEntry(
                     analysis_id=analysis.id,
                     anonymous_alias=alias_name,
                     larp_score=larp_score,
                     roast=roast_data.get("overall_roast", "No roast available."),
-                    summary=roast_data.get("verdict_summary"),
+                    summary=summary_payload,
                     token=str(uuid.uuid4()).replace("-", ""),
                 )
                 db.add(leaderboard_entry)

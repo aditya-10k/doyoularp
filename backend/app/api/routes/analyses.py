@@ -361,14 +361,28 @@ async def get_analysis_result(
             )
         )
 
+    verdict_summary = entry.summary or "Evaluation complete."
+    funny_mismatch = None
+    if entry.summary and entry.summary.startswith("{"):
+        try:
+            parsed_sum = json.loads(entry.summary)
+            if isinstance(parsed_sum, dict):
+                verdict_summary = parsed_sum.get("verdict_summary") or verdict_summary
+                funny_mismatch = parsed_sum.get("funny_mismatch")
+                if parsed_sum.get("weakest_claim") and not weakest_claim:
+                    weakest_claim = parsed_sum.get("weakest_claim")
+        except Exception:
+            pass
+
     return ResultResponse(
         analysis_id=analysis.id,
         anonymous_alias=entry.anonymous_alias,
         larp_score=entry.larp_score,
         roast=entry.roast,
-        verdict_summary=entry.summary or "Evaluation complete.",
+        verdict_summary=verdict_summary,
         strongest_claim=strongest_claim,
         weakest_claim=weakest_claim,
+        funny_mismatch=funny_mismatch,
         claims_count=len(claims_breakdown),
         claims_breakdown=claims_breakdown,
         sources=sources,

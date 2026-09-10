@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 def calculate_larp_score(
     evaluations: List[Dict[str, Any]],
     repositories: Optional[List[Dict[str, Any]]] = None,
+    has_github: bool = True,
 ) -> Dict[str, Any]:
     """
     Computes an aggressive, skeptical LARP Score between 0.0 and 100.0.
@@ -11,6 +12,7 @@ def calculate_larp_score(
     - Gives higher weight to Project & Experience claims over simple skill mentions.
     - Single-match or incidental skills (PARTIALLY_SUPPORTED) incur real penalties.
     - Contradictions trigger severe flat penalties and high minimum floors.
+    - Missing GitHub link triggers maximum phantom penalties and 92.5+ score floor.
     """
     if not evaluations:
         return {
@@ -93,6 +95,11 @@ def calculate_larp_score(
     elif repositories is not None and len(repositories) == 0:
         zero_receipt_penalty = 15.0
 
+    # 5. Missing GitHub Escalation (Phantom profile with zero repository provenance)
+    missing_github_penalty = 0.0
+    if not has_github:
+        missing_github_penalty = 35.0
+
     # Base formula with milded coefficients
     base_score = (
         (contra_ratio * 80.0)
@@ -102,6 +109,7 @@ def calculate_larp_score(
         + unverified_penalty
         + ownership_penalty
         + zero_receipt_penalty
+        + missing_github_penalty
     )
 
     # Credibility Discount: rewards verified work proportionally
@@ -116,7 +124,9 @@ def calculate_larp_score(
     raw_score = base_score - credibility_discount
 
     # Minimum Floors: Only applied when fraud or unverified claims dominate the resume
-    if contra_ratio >= 0.35:
+    if not has_github:
+        raw_score = max(raw_score, 92.5)
+    elif contra_ratio >= 0.35:
         raw_score = max(raw_score, 55.0)
     elif contra_ratio >= 0.2:
         raw_score = max(raw_score, 35.0)
@@ -135,6 +145,7 @@ def calculate_larp_score(
             "contradicted": contradicted,
             "ownership_penalty": ownership_penalty,
             "zero_receipt_penalty": zero_receipt_penalty,
+            "missing_github_penalty": missing_github_penalty,
             "contra_penalty": contra_penalty,
             "multi_unverified_penalty": unverified_penalty,
         },

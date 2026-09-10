@@ -40,6 +40,8 @@ export default function ResultDashboard({
     return c.evaluation?.verdict === activeFilter;
   });
 
+  const hasGithub = result.sources?.some((s) => s.type === "github");
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 15 }}
@@ -77,6 +79,23 @@ export default function ResultDashboard({
             </div>
           </div>
         </div>
+
+        {/* Missing GitHub Savage Reality Check Banner */}
+        {!hasGithub && (
+          <div className="border border-red-600 bg-red-950/40 p-5 space-y-2 mt-6">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs font-black uppercase tracking-widest text-red-500">
+                [ CRITICAL OFFENSE // ZERO GITHUB PROVENANCE ]
+              </span>
+            </div>
+            <p className="font-mono text-sm sm:text-base font-bold text-red-200">
+              &ldquo;Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.&rdquo;
+            </p>
+            <p className="font-mono text-xs text-zinc-400">
+              Candidate submitted an engineering resume without linking a GitHub profile or repository receipts. Automatic maximum LARP penalties and reality autopsy applied.
+            </p>
+          </div>
+        )}
 
         {/* The Brutal Roast Block */}
         <div className="pt-6 space-y-6">
