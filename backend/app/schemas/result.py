@@ -39,3 +39,6 @@ class LeaderboardResponse(BaseModel):
     total: int
     user_entry: Optional[LeaderboardEntryItem] = None
     leaderboard: List[LeaderboardEntryItem]
+    has_more: bool = False
+    offset: int = 0
+    limit: int = 50

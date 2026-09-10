@@ -7,12 +7,14 @@ if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.api.routes import analyses
 from backend.app.core.config import settings
-from backend.app.db.session import init_db
+from backend.app.db.session import get_db, init_db
+from backend.app.schemas.result import LeaderboardResponse
 
 
 @asynccontextmanager
@@ -60,12 +62,14 @@ async def favicon():
     return Response(status_code=204)
 
 
-@app.get("/api/v1/leaderboard", tags=["Leaderboard"])
-async def api_global_leaderboard():
-    from backend.app.db.session import async_session_maker
+@app.get("/api/v1/leaderboard", response_model=LeaderboardResponse, tags=["Leaderboard"])
+async def api_global_leaderboard(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> LeaderboardResponse:
     from backend.app.api.routes.analyses import _fetch_leaderboard_response
-    async with async_session_maker() as db:
-        return await _fetch_leaderboard_response(db, None)
+    return await _fetch_leaderboard_response(db, None, limit=limit, offset=offset)
 
 
 @app.get("/health", tags=["Health"])

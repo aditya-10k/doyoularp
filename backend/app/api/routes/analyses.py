@@ -1,7 +1,7 @@
 import asyncio
 import json
 from typing import Dict, List, Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -447,15 +447,28 @@ async def get_analysis_result(
 async def _fetch_leaderboard_response(
     db: AsyncSession,
     analysis_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> LeaderboardResponse:
-    """Queries top leaderboard entries ordered by highest LARP score (most delusional first)."""
-    stmt = select(LeaderboardEntry).order_by(desc(LeaderboardEntry.larp_score)).limit(50)
+    """Queries paginated leaderboard entries ordered by highest LARP score (most delusional first)."""
+    # 1. Total count of all leaderboard entries
+    count_stmt = select(func.count(LeaderboardEntry.id))
+    total_count = (await db.execute(count_stmt)).scalar() or 0
+
+    # 2. Paginated entries
+    stmt = (
+        select(LeaderboardEntry)
+        .order_by(desc(LeaderboardEntry.larp_score))
+        .offset(offset)
+        .limit(limit)
+    )
     res = await db.execute(stmt)
     entries = list(res.scalars().all())
 
     user_entry_item = None
     leaderboard_items = []
-    for rank, e in enumerate(entries, start=1):
+    for idx, e in enumerate(entries):
+        rank = offset + idx + 1
         item = LeaderboardEntryItem(
             rank=rank,
             anonymous_alias=e.anonymous_alias,
@@ -483,25 +496,34 @@ async def _fetch_leaderboard_response(
                 created_at=user_e.created_at,
             )
 
+    has_more = (offset + len(leaderboard_items)) < total_count
+
     return LeaderboardResponse(
-        total=len(leaderboard_items),
+        total=total_count,
         user_entry=user_entry_item,
         leaderboard=leaderboard_items,
+        has_more=has_more,
+        offset=offset,
+        limit=limit,
     )
 
 
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 async def get_global_leaderboard(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> LeaderboardResponse:
-    """Returns top ranked global leaderboard entries."""
-    return await _fetch_leaderboard_response(db, None)
+    """Returns paginated ranked global leaderboard entries."""
+    return await _fetch_leaderboard_response(db, None, limit=limit, offset=offset)
 
 
 @router.get("/{analysis_id}/leaderboard", response_model=LeaderboardResponse)
 async def get_analysis_leaderboard(
     analysis_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> LeaderboardResponse:
-    """Returns leaderboard context, highlighting user entry if completed, or global if not."""
-    return await _fetch_leaderboard_response(db, analysis_id)
+    """Returns paginated leaderboard context, highlighting user entry if completed, or global if not."""
+    return await _fetch_leaderboard_response(db, analysis_id, limit=limit, offset=offset)

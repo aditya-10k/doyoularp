@@ -73,4 +73,8 @@ export interface LeaderboardResponse {
   total: number;
   user_entry?: LeaderboardEntryItem | null;
   leaderboard: LeaderboardEntryItem[];
+  has_more?: boolean;
+  offset?: number;
+  limit?: number;
 }
+

@@ -88,16 +88,21 @@ export async function getAnalysisResult(analysisId: string): Promise<ResultRespo
   return res.json();
 }
 
-export async function getLeaderboard(analysisId?: string | null): Promise<LeaderboardResponse> {
+export async function getLeaderboard(
+  analysisId?: string | null,
+  limit: number = 50,
+  offset: number = 0
+): Promise<LeaderboardResponse> {
+  const query = `limit=${limit}&offset=${offset}`;
   const url =
     analysisId && analysisId !== "global"
-      ? `${API_BASE}/analyses/${analysisId}/leaderboard`
-      : `${API_BASE}/leaderboard`;
+      ? `${API_BASE}/analyses/${analysisId}/leaderboard?${query}`
+      : `${API_BASE}/leaderboard?${query}`;
 
   let res = await fetch(url);
   if (!res.ok) {
     // Fallback to /analyses/global/leaderboard if /leaderboard root fails
-    res = await fetch(`${API_BASE}/analyses/global/leaderboard`);
+    res = await fetch(`${API_BASE}/analyses/global/leaderboard?${query}`);
     if (!res.ok) {
       throw new Error(`Failed to fetch leaderboard: ${res.statusText}`);
     }
