@@ -21,8 +21,22 @@ _RATE_LIMITED_UNTIL = 0.0
 class GroqClient:
     """Wrapper for Groq API with structured JSON output, circuit-breaker, and fallback support."""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key if api_key is not None else settings.GROQ_API_KEY
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        user_api_key: Optional[str] = None,
+        user_provider: Optional[str] = None,
+    ):
+        self.user_api_key = user_api_key.strip() if user_api_key and user_api_key.strip() else None
+        self.user_provider = (user_provider or "groq").lower().strip() if self.user_api_key else None
+
+        effective_groq_key = (
+            self.user_api_key
+            if (self.user_api_key and self.user_provider == "groq")
+            else (api_key if api_key is not None else settings.GROQ_API_KEY)
+        )
+        self.api_key = effective_groq_key
         self.model = model or settings.GROQ_MODEL
         self._client: Optional[AsyncGroq] = None
         if self.api_key:
@@ -30,9 +44,10 @@ class GroqClient:
 
     @property
     def is_configured(self) -> bool:
-        """Returns True if ANY supported AI provider has an API key configured."""
+        """Returns True if ANY supported AI provider has an API key configured or user provided one."""
         return bool(
-            self.api_key
+            self.user_api_key
+            or self.api_key
             or settings.OPENROUTER_API_KEY
             or settings.GEMINI_API_KEY
             or settings.OPENAI_API_KEY
@@ -50,7 +65,8 @@ class GroqClient:
     ) -> str:
         """
         Sends completion request across configured AI providers in resilient cascade:
-        1. Groq (with model cascade & safe OTPM token limits)
+        0. User-supplied priority provider (if configured)
+        1. Groq (with active model fleet & safe OTPM token limits)
         2. OpenRouter (free tier / configured models)
         3. Google Gemini
         4. OpenAI
@@ -68,6 +84,30 @@ class GroqClient:
                 "No AI provider API key is configured. Please provide at least one of: "
                 "GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY."
             )
+
+        # 0. Try user-supplied priority provider first if non-groq
+        if self.user_api_key and self.user_provider:
+            if self.user_provider == "gemini":
+                logger.info("Prioritizing user-provided Gemini API key...")
+                resp = await self._try_gemini(
+                    system_prompt, user_prompt, temperature, json_mode, custom_key=self.user_api_key
+                )
+                if resp:
+                    return resp
+            elif self.user_provider == "openrouter":
+                logger.info("Prioritizing user-provided OpenRouter API key...")
+                resp = await self._try_openrouter(
+                    system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=self.user_api_key
+                )
+                if resp:
+                    return resp
+            elif self.user_provider == "openai":
+                logger.info("Prioritizing user-provided OpenAI API key...")
+                resp = await self._try_openai(
+                    system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=self.user_api_key
+                )
+                if resp:
+                    return resp
 
         # 1. Try Groq (if configured)
         if self._client:
@@ -203,9 +243,11 @@ class GroqClient:
         temperature: float,
         json_mode: bool,
         max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
     ) -> Optional[str]:
         """Fallback to OpenRouter models."""
-        if not settings.OPENROUTER_API_KEY:
+        effective_key = custom_key or settings.OPENROUTER_API_KEY
+        if not effective_key:
             return None
 
         models = [
@@ -218,7 +260,7 @@ class GroqClient:
             "nvidia/nemotron-3.5-lightning:free",
         ]
         headers = {
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {effective_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://doyoularp.com",
             "X-Title": "doyoularp",
@@ -270,9 +312,11 @@ class GroqClient:
         user_prompt: str,
         temperature: float,
         json_mode: bool,
+        custom_key: Optional[str] = None,
     ) -> Optional[str]:
         """Fallback to Gemini Generative Language models."""
-        if not settings.GEMINI_API_KEY:
+        effective_key = custom_key or settings.GEMINI_API_KEY
+        if not effective_key:
             return None
 
         models = [
@@ -289,7 +333,7 @@ class GroqClient:
                 continue
             seen.add(model)
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={effective_key}"
             gen_config: Dict[str, Any] = {"temperature": temperature}
             if json_mode:
                 gen_config["responseMimeType"] = "application/json"
@@ -324,14 +368,16 @@ class GroqClient:
         temperature: float,
         json_mode: bool,
         max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
     ) -> Optional[str]:
         """Fallback to OpenAI models."""
-        if not settings.OPENAI_API_KEY:
+        effective_key = custom_key or settings.OPENAI_API_KEY
+        if not effective_key:
             return None
 
         models = [settings.OPENAI_MODEL or "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
         headers = {
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            "Authorization": f"Bearer {effective_key}",
             "Content-Type": "application/json",
         }
         seen = set()

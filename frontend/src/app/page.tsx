@@ -2,12 +2,13 @@
 
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Trophy } from "lucide-react";
+import { Trophy, Key, RotateCcw } from "lucide-react";
 import BackgroundHero from "@/components/BackgroundHero";
 import ResumeUploader from "@/components/ResumeUploader";
 import AnalysisProgress from "@/components/AnalysisProgress";
 import ResultDashboard from "@/components/ResultDashboard";
 import LeaderboardModal from "@/components/LeaderboardModal";
+import ApiKeyModal from "@/components/ApiKeyModal";
 import EyeLasers from "@/components/EyeLasers";
 import BurningQuote from "@/components/BurningQuote";
 import {
@@ -27,6 +28,29 @@ export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<ResultResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [hasCustomKey, setHasCustomKey] = useState(false);
+
+  // Check custom key and prompt on initial site opening
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const key = localStorage.getItem("doyoularp_user_api_key");
+      const promptSeen = localStorage.getItem("doyoularp_api_prompt_seen");
+      if (key && key.trim()) {
+        setHasCustomKey(true);
+      } else if (!promptSeen) {
+        // Open popup automatically on first visit to facilitate key setup
+        setShowApiKeyModal(true);
+      }
+    }
+  }, []);
+
+  const refreshKeyStatus = () => {
+    if (typeof window !== "undefined") {
+      const key = localStorage.getItem("doyoularp_user_api_key");
+      setHasCustomKey(Boolean(key && key.trim()));
+    }
+  };
 
   // Stream analysis status via SSE when in PROCESSING state
   useEffect(() => {
@@ -92,14 +116,40 @@ export default function Home() {
 
   return (
     <BackgroundHero noScroll={viewState === "IDLE"}>
-      {/* Minimal Top-Right Leaderboard Trigger */}
-      <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-20">
+      {/* Top-Right Controls: API Key, Leaderboard & Quick Reset */}
+      <div className="fixed top-4 right-4 sm:top-6 sm:right-6 z-40 flex items-center gap-2 sm:gap-2.5">
+        {viewState === "RESULT" && (
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-1.5 border border-red-600/80 bg-red-950/60 px-3 py-1.5 sm:px-3.5 sm:py-2 font-mono text-xs font-bold uppercase tracking-wider text-red-200 backdrop-blur-md transition-all hover:bg-red-600 hover:text-white shadow-md"
+            title="Analyze another resume"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">ANALYZE ANOTHER</span>
+            <span className="sm:hidden">NEW</span>
+          </button>
+        )}
+
+        <button
+          onClick={() => setShowApiKeyModal(true)}
+          className={`flex items-center gap-2 border px-3 py-1.5 sm:px-3.5 sm:py-2 font-mono text-xs uppercase tracking-wider backdrop-blur-md transition-all ${
+            hasCustomKey
+              ? "border-cyan-500/70 bg-cyan-950/50 text-cyan-300 hover:border-cyan-400 hover:bg-cyan-900/60"
+              : "border-zinc-800 bg-black/80 text-zinc-400 hover:border-zinc-600 hover:text-white"
+          }`}
+        >
+          <Key className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${hasCustomKey ? "text-cyan-400" : "text-zinc-400"}`} />
+          <span className="hidden sm:inline">{hasCustomKey ? "KEY: ACTIVE" : "CUSTOM KEY"}</span>
+          <span className="sm:hidden">{hasCustomKey ? "KEY" : "KEY"}</span>
+        </button>
+
         <button
           onClick={() => setShowLeaderboard(true)}
-          className="flex items-center gap-2 border border-zinc-800 bg-black/70 px-3.5 py-1.5 sm:px-4 sm:py-2 font-mono text-xs uppercase tracking-wider text-zinc-400 backdrop-blur-md transition-all hover:border-red-600 hover:text-white"
+          className="flex items-center gap-2 border border-zinc-800 bg-black/80 px-3 py-1.5 sm:px-3.5 sm:py-2 font-mono text-xs uppercase tracking-wider text-zinc-400 backdrop-blur-md transition-all hover:border-red-600 hover:text-white"
         >
           <Trophy className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-zinc-400" />
-          <span>LEADERBOARD</span>
+          <span className="hidden sm:inline">LEADERBOARD</span>
+          <span className="sm:hidden">RANKS</span>
         </button>
       </div>
 
@@ -211,6 +261,13 @@ export default function Home() {
           onClose={() => setShowLeaderboard(false)}
         />
       )}
+
+      {/* Custom API Key Modal */}
+      <ApiKeyModal
+        isOpen={showApiKeyModal}
+        onClose={() => setShowApiKeyModal(false)}
+        onKeySaved={refreshKeyStatus}
+      />
     </BackgroundHero>
   );
 }

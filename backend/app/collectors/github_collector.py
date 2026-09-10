@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from bs4 import BeautifulSoup
 import httpx
 from backend.app.core.config import settings
+from backend.app.utils.sanitizer import sanitize_null_bytes
 
 
 MANIFEST_FILENAMES = [
@@ -330,7 +331,9 @@ class GitHubCollector:
                     "meta": parsed_meta,
                 }
 
-        return readme_text, manifests
+        clean_readme = sanitize_null_bytes(readme_text) if readme_text else None
+        clean_manifests = sanitize_null_bytes(manifests)
+        return clean_readme, clean_manifests
 
     async def collect_single_repo(
         self, owner: str, repo: str, candidate_username: Optional[str] = None

@@ -11,12 +11,13 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.agents.claim_extractor import ClaimExtractor, is_excluded_claim
 from backend.app.agents.evaluation_agent import EvaluationAgent
-from backend.app.agents.groq_client import GroqRateLimitError
+from backend.app.agents.groq_client import GroqClient, GroqRateLimitError
 from backend.app.agents.larp_calculator import calculate_larp_score
 from backend.app.agents.roast_agent import RoastAgent
 from backend.app.collectors.github_collector import GitHubCollector
 from backend.app.collectors.web_collector import WebCollector
 from backend.app.core.config import settings
+from backend.app.utils.sanitizer import sanitize_null_bytes
 from backend.app.models.models import (
     Analysis,
     Candidate,
@@ -141,12 +142,31 @@ class PipelineService:
         await db.refresh(analysis)
         return analysis
 
-    async def run_pipeline(self, analysis_id: str, filename: str, pdf_bytes: bytes, db: AsyncSession) -> None:
+    async def run_pipeline(
+        self,
+        analysis_id: str,
+        filename: str,
+        pdf_bytes: bytes,
+        db: AsyncSession,
+        user_api_key: Optional[str] = None,
+        user_provider: Optional[str] = None,
+    ) -> None:
         """Full end-to-end processing pipeline across all 13 stages."""
         analysis = await db.get(Analysis, analysis_id)
         if not analysis:
             logger.error(f"Analysis {analysis_id} not found.")
             return
+
+        claim_extractor = self.claim_extractor
+        evaluation_agent = self.evaluation_agent
+        roast_agent = self.roast_agent
+
+        if user_api_key and user_api_key.strip():
+            logger.info("Configuring analysis with user-provided API key and provider...")
+            custom_groq = GroqClient(user_api_key=user_api_key.strip(), user_provider=user_provider)
+            claim_extractor = ClaimExtractor(groq_client=custom_groq)
+            evaluation_agent = EvaluationAgent(groq_client=custom_groq)
+            roast_agent = RoastAgent(groq_client=custom_groq)
 
         try:
             # 1. Parsing Resume
@@ -160,8 +180,8 @@ class PipelineService:
             resume = Resume(
                 candidate_id=analysis.candidate_id,
                 analysis_id=analysis.id,
-                filename=filename,
-                raw_text=parsed_pdf.raw_text,
+                filename=sanitize_null_bytes(filename),
+                raw_text=sanitize_null_bytes(parsed_pdf.raw_text),
                 page_count=parsed_pdf.page_count,
             )
             db.add(resume)
@@ -178,9 +198,9 @@ class PipelineService:
                     candidate_id=analysis.candidate_id,
                     analysis_id=analysis.id,
                     type=item.get("category", "other"),
-                    url=item.get("url"),
+                    url=sanitize_null_bytes(item.get("url")),
                     status="pending",
-                    meta=item,
+                    meta=sanitize_null_bytes(item),
                 )
                 db.add(src)
                 discovered_sources.append(src)
@@ -268,7 +288,7 @@ class PipelineService:
             analysis.progress = 35
             await db.commit()
 
-            extracted_claims = await self.claim_extractor.extract_claims(
+            extracted_claims = await claim_extractor.extract_claims(
                 parsed_pdf.raw_text,
                 discovered_urls=[s.url for s in discovered_sources if s.url]
             )
@@ -285,15 +305,15 @@ class PipelineService:
                 claim_obj = Claim(
                     analysis_id=analysis.id,
                     resume_id=resume.id,
-                    claim_text=claim_text,
-                    category=cat,
-                    section=sec,
-                    source_text=c.get("source_text", ""),
-                    meta={
+                    claim_text=sanitize_null_bytes(claim_text),
+                    category=sanitize_null_bytes(cat),
+                    section=sanitize_null_bytes(sec),
+                    source_text=sanitize_null_bytes(c.get("source_text", "")),
+                    meta=sanitize_null_bytes({
                         "technologies": c.get("technologies", []),
                         "project_name": c.get("project_name"),
                         "attached_url": c.get("attached_url"),
-                    },
+                    }),
                 )
                 db.add(claim_obj)
                 claim_records.append(claim_obj)
@@ -362,13 +382,13 @@ class PipelineService:
                     analysis_id=analysis.id,
                     candidate_id=analysis.candidate_id,
                     github_source_id=discovered_sources[0].id if discovered_sources else None,
-                    name=r.get("name"),
-                    owner=r.get("owner"),
-                    url=r.get("url"),
-                    description=r.get("description"),
+                    name=sanitize_null_bytes(r.get("name")),
+                    owner=sanitize_null_bytes(r.get("owner")),
+                    url=sanitize_null_bytes(r.get("url")),
+                    description=sanitize_null_bytes(r.get("description")),
                     stars=r.get("stars", 0),
                     forks=r.get("forks", 0),
-                    meta={"languages": r.get("languages", {})},
+                    meta=sanitize_null_bytes({"languages": r.get("languages", {})}),
                 )
                 db.add(repo_obj)
                 await db.flush()
@@ -380,10 +400,10 @@ class PipelineService:
                         candidate_id=analysis.candidate_id,
                         source_id=discovered_sources[0].id if discovered_sources else None,
                         evidence_type="readme",
-                        title=f"{r.get('name')} README",
-                        content=f"Repository {r.get('name')} Documentation:\n\n{r.get('readme')}",
-                        url=r.get("url"),
-                        meta={"repo": r.get("name")},
+                        title=sanitize_null_bytes(f"{r.get('name')} README"),
+                        content=sanitize_null_bytes(f"Repository {r.get('name')} Documentation:\n\n{r.get('readme')}"),
+                        url=sanitize_null_bytes(r.get("url")),
+                        meta=sanitize_null_bytes({"repo": r.get("name")}),
                     )
                     db.add(readme_ev)
 
@@ -403,10 +423,10 @@ class PipelineService:
                         candidate_id=analysis.candidate_id,
                         source_id=discovered_sources[0].id if discovered_sources else None,
                         evidence_type="github_manifest",
-                        title=f"{r.get('name')} {m_name}",
-                        content=f"Project: {r.get('name')}\nManifest: {m_name}\nVerification Summary: {summary_str}\n\n{m_content}",
-                        url=r.get("url"),
-                        meta={"repo": r.get("name"), "manifest": m_name, "parsed": m_meta},
+                        title=sanitize_null_bytes(f"{r.get('name')} {m_name}"),
+                        content=sanitize_null_bytes(f"Project: {r.get('name')}\nManifest: {m_name}\nVerification Summary: {summary_str}\n\n{m_content}"),
+                        url=sanitize_null_bytes(r.get("url")),
+                        meta=sanitize_null_bytes({"repo": r.get("name"), "manifest": m_name, "parsed": m_meta}),
                     )
                     db.add(manifest_ev)
 
@@ -416,18 +436,18 @@ class PipelineService:
                     candidate_id=analysis.candidate_id,
                     source_id=discovered_sources[0].id if discovered_sources else None,
                     evidence_type="github_repo",
-                    title=f"Repository {r.get('name')}",
-                    content=(
+                    title=sanitize_null_bytes(f"Repository {r.get('name')}"),
+                    content=sanitize_null_bytes(
                         f"Repo: {r.get('name')}. Description: {r.get('description')}. "
                         f"Languages: {list(r.get('languages', {}).keys())}. "
                         f"Publicly verified GitHub repository with candidate attribution."
                     ),
-                    url=r.get("url"),
-                    meta={
+                    url=sanitize_null_bytes(r.get("url")),
+                    meta=sanitize_null_bytes({
                         "repo": r.get("name"),
                         "candidate_commit_count": r.get("candidate_commit_count", 5),
                         "total_commit_count": r.get("total_commit_count", 5),
-                    },
+                    }),
                 )
                 db.add(repo_summary_ev)
             # Aggregate candidate-wide verified tech stack inventory
@@ -514,17 +534,17 @@ class PipelineService:
                     candidate_id=analysis.candidate_id,
                     source_id=discovered_sources[0].id if discovered_sources else None,
                     evidence_type="github_tech_stack",
-                    title="Candidate Verified Tech Stack Inventory",
-                    content=inventory_content,
-                    url=discovered_sources[0].url if discovered_sources else None,
-                    meta={
+                    title=sanitize_null_bytes("Candidate Verified Tech Stack Inventory"),
+                    content=sanitize_null_bytes(inventory_content),
+                    url=sanitize_null_bytes(discovered_sources[0].url if discovered_sources else None),
+                    meta=sanitize_null_bytes({
                         "languages": list(all_languages),
                         "packages_sample": list(all_manifest_packages)[:50],
                         "services": list(all_infra_services),
                         "repo_count": verified_repo_count,
                         "tech_repo_counts": {k: len(v) for k, v in tech_repo_map.items()},
                         "tech_commits": tech_commits_map,
-                    },
+                    }),
                 )
                 db.add(tech_stack_ev)
 
@@ -556,10 +576,10 @@ class PipelineService:
                                 candidate_id=analysis.candidate_id,
                                 source_id=src.id,
                                 evidence_type="web_page",
-                                title=page_data.get("title") or "Project Page",
-                                content=page_data.get("content"),
-                                url=src.url,
-                                meta={"headings": page_data.get("headings", [])},
+                                title=sanitize_null_bytes(page_data.get("title") or "Project Page"),
+                                content=sanitize_null_bytes(page_data.get("content")),
+                                url=sanitize_null_bytes(src.url),
+                                meta=sanitize_null_bytes({"headings": page_data.get("headings", [])}),
                             )
                             db.add(web_ev)
                         else:
@@ -629,7 +649,7 @@ class PipelineService:
             await db.commit()
 
             # Fast batch evaluation: skills evaluated deterministically in 0ms, projects in at most 1 single call
-            eval_outcomes = await self.evaluation_agent.evaluate_claims_batch(claims_with_chunks)
+            eval_outcomes = await evaluation_agent.evaluate_claims_batch(claims_with_chunks)
 
             eval_results_for_scoring: List[Dict[str, Any]] = []
 
@@ -643,7 +663,7 @@ class PipelineService:
                     claim_id=claim.id,
                     verdict=eval_data.get("verdict", "UNVERIFIED"),
                     confidence=eval_data.get("confidence", 0.5),
-                    reasoning=eval_data.get("reasoning", ""),
+                    reasoning=sanitize_null_bytes(eval_data.get("reasoning", "")),
                 )
                 db.add(eval_record)
                 await db.flush()
@@ -682,7 +702,7 @@ class PipelineService:
             )
             larp_score = score_data["larp_score"]
 
-            roast_data = await self.roast_agent.generate_roast(
+            roast_data = await roast_agent.generate_roast(
                 larp_score=larp_score,
                 evaluations=eval_results_for_scoring,
                 repos=collected_repos_data,
@@ -694,9 +714,9 @@ class PipelineService:
             alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
 
             summary_payload = json.dumps({
-                "verdict_summary": roast_data.get("verdict_summary"),
-                "funny_mismatch": roast_data.get("funny_mismatch"),
-                "weakest_claim": roast_data.get("weakest_claim"),
+                "verdict_summary": sanitize_null_bytes(roast_data.get("verdict_summary")),
+                "funny_mismatch": sanitize_null_bytes(roast_data.get("funny_mismatch")),
+                "weakest_claim": sanitize_null_bytes(roast_data.get("weakest_claim")),
             })
 
             # Check if leaderboard entry already exists
@@ -704,16 +724,19 @@ class PipelineService:
             existing_res = await db.execute(stmt_existing)
             existing_entry = existing_res.scalar_one_or_none()
 
+            raw_roast = roast_data.get("overall_roast", "No roast available.")
+            clean_roast = sanitize_null_bytes(raw_roast)
+
             if existing_entry:
                 existing_entry.larp_score = larp_score
-                existing_entry.roast = roast_data.get("overall_roast", "No roast available.")
+                existing_entry.roast = clean_roast
                 existing_entry.summary = summary_payload
             else:
                 leaderboard_entry = LeaderboardEntry(
                     analysis_id=analysis.id,
-                    anonymous_alias=alias_name,
+                    anonymous_alias=sanitize_null_bytes(alias_name),
                     larp_score=larp_score,
-                    roast=roast_data.get("overall_roast", "No roast available."),
+                    roast=clean_roast,
                     summary=summary_payload,
                     token=str(uuid.uuid4()).replace("-", ""),
                 )

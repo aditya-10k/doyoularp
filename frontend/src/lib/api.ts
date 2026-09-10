@@ -23,8 +23,21 @@ export async function uploadResume(analysisId: string, file: File): Promise<void
   const formData = new FormData();
   formData.append("file", file);
 
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    const userApiKey = localStorage.getItem("doyoularp_user_api_key");
+    const userProvider = localStorage.getItem("doyoularp_user_provider");
+    if (userApiKey && userApiKey.trim()) {
+      headers["X-User-Api-Key"] = userApiKey.trim();
+    }
+    if (userProvider && userProvider.trim()) {
+      headers["X-User-Provider"] = userProvider.trim();
+    }
+  }
+
   const res = await fetch(`${API_BASE}/analyses/${analysisId}/resume`, {
     method: "POST",
+    headers,
     body: formData,
   });
 

@@ -58,8 +58,59 @@ export default function ResultDashboard({
       initial={{ opacity: 0, y: 15 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.8 }}
-      className="w-full max-w-4xl mx-auto space-y-8 pb-16"
+      className="w-full max-w-4xl mx-auto space-y-8 pb-16 relative"
     >
+      {/* Top Action Controls: Immediately Accessible Without Scrolling */}
+      <div className="border border-zinc-800 bg-[#0c0c0f]/95 p-3 sm:p-4 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 shadow-xl">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onReset}
+            className="flex items-center gap-2 border border-red-600 bg-red-600/15 hover:bg-red-600 px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-red-400 hover:text-white transition-all shadow-sm"
+          >
+            <RotateCcw className="h-4 w-4" />
+            <span>GENERATE NEW // ANALYZE ANOTHER</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onOpenLeaderboard}
+            className="flex items-center gap-2 border border-zinc-700 bg-zinc-900/80 hover:border-red-600 px-4 py-2 font-mono text-xs uppercase tracking-wider text-zinc-200 hover:text-white transition-all"
+          >
+            <Trophy className="h-4 w-4 text-amber-500" />
+            <span>VIEW LEADERBOARD</span>
+          </button>
+
+          <button
+            onClick={handleCopyRoast}
+            className="flex items-center gap-1.5 border border-zinc-800 bg-black/60 px-3.5 py-2 font-mono text-xs uppercase tracking-wider text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 transition-colors"
+          >
+            {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+            <span>{copied ? "COPIED" : "SHARE ROAST"}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Floating Side/Bottom Quick-Action Dock on Scroll */}
+      <div className="fixed bottom-6 right-6 z-40 flex flex-col sm:flex-row items-end sm:items-center gap-2 drop-shadow-2xl">
+        <button
+          onClick={onReset}
+          className="flex items-center gap-2 border border-red-600 bg-black/90 hover:bg-red-600 px-3.5 py-2 sm:px-4 sm:py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-red-400 hover:text-white transition-all backdrop-blur-md shadow-2xl"
+          title="Scan another resume immediately"
+        >
+          <RotateCcw className="h-4 w-4" />
+          <span>GENERATE NEW</span>
+        </button>
+        <button
+          onClick={onOpenLeaderboard}
+          className="flex items-center gap-2 border border-zinc-700 bg-black/90 hover:border-red-600 px-3.5 py-2 sm:px-4 sm:py-2.5 font-mono text-xs uppercase tracking-wider text-zinc-200 hover:text-white transition-all backdrop-blur-md shadow-2xl"
+          title="Open anonymous leaderboard"
+        >
+          <Trophy className="h-4 w-4 text-amber-500" />
+          <span className="hidden sm:inline">LEADERBOARD</span>
+        </button>
+      </div>
+
       {/* Target Identity & Score Overview */}
       <div className="border border-zinc-800 bg-[#0a0a0c]/90 p-6 sm:p-8 backdrop-blur-md">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 border-b border-zinc-800/80">

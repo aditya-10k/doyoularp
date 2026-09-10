@@ -1,7 +1,7 @@
 import asyncio
 import json
 from typing import List, Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,9 +43,17 @@ router = APIRouter(prefix="/analyses", tags=["Analyses"])
 pipeline_service = PipelineService()
 
 
-async def _run_pipeline_background(analysis_id: str, filename: str, pdf_bytes: bytes) -> None:
+async def _run_pipeline_background(
+    analysis_id: str,
+    filename: str,
+    pdf_bytes: bytes,
+    user_api_key: Optional[str] = None,
+    user_provider: Optional[str] = None,
+) -> None:
     async with async_session_maker() as db:
-        await pipeline_service.run_pipeline(analysis_id, filename, pdf_bytes, db)
+        await pipeline_service.run_pipeline(
+            analysis_id, filename, pdf_bytes, db, user_api_key=user_api_key, user_provider=user_provider
+        )
 
 
 @router.post("", response_model=AnalysisStatusResponse, status_code=status.HTTP_201_CREATED)
@@ -75,6 +83,8 @@ async def upload_resume(
     analysis_id: str,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    x_user_api_key: Optional[str] = Header(None, alias="X-User-Api-Key"),
+    x_user_provider: Optional[str] = Header(None, alias="X-User-Provider"),
     db: AsyncSession = Depends(get_db),
 ) -> ResumeUploadResponse:
     """Uploads resume PDF and kicks off the asynchronous 13-stage analysis pipeline."""
@@ -94,12 +104,14 @@ async def upload_resume(
             detail=f"File exceeds maximum allowed size ({settings.MAX_PDF_SIZE_BYTES // (1024*1024)}MB)",
         )
 
-    # Queue background task for analysis
+    # Queue background task for analysis with optional user-supplied API key
     background_tasks.add_task(
         _run_pipeline_background,
         analysis_id=analysis.id,
         filename=file.filename or "resume.pdf",
         pdf_bytes=pdf_bytes,
+        user_api_key=x_user_api_key,
+        user_provider=x_user_provider,
     )
 
     return ResumeUploadResponse(

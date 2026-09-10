@@ -40,3 +40,4 @@ htmlcov/
 
 # Local scripts
 build_history.py
+*.tsbuildinfo
