@@ -70,11 +70,22 @@ async def api_global_leaderboard():
 
 @app.get("/health", tags=["Health"])
 async def health_check():
+    providers = {
+        "groq": bool(settings.GROQ_API_KEY),
+        "openrouter": bool(settings.OPENROUTER_API_KEY),
+        "gemini": bool(settings.GEMINI_API_KEY),
+        "openai": bool(settings.OPENAI_API_KEY),
+        "mistral": bool(settings.MISTRAL_API_KEY),
+        "anthropic": bool(settings.ANTHROPIC_API_KEY),
+    }
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
         "groq_configured": bool(settings.GROQ_API_KEY),
         "groq_model": settings.GROQ_MODEL,
+        "primary_model": settings.GROQ_MODEL,
+        "providers": providers,
+        "active_provider_count": sum(1 for v in providers.values() if v),
     }
 
 

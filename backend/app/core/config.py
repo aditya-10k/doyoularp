@@ -14,16 +14,26 @@ class Settings(BaseSettings):
 
     # AI Provider: Groq
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
     # External Data Sources
     GITHUB_TOKEN: Optional[str] = None
 
-    # Additional AI Providers (Fallback & Task Division)
+    # Multi-Provider AI Support (Groq, OpenRouter, Gemini, OpenAI, Mistral, Anthropic)
     OPENROUTER_API_KEY: Optional[str] = None
-    OPENROUTER_MODEL: str = "nvidia/nemotron-3.5-lightning:free"
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-flash-latest"
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
+    MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_MODEL: str = "mistral-small-latest"
+
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-3-5-haiku-20241022"
 
     # Scoring & Intensity
     ROAST_INTENSITY: int = 3  # 0 to 4

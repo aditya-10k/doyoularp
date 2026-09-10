@@ -581,6 +581,14 @@ class PipelineService:
             analysis.progress = 80
             await db.commit()
 
+            # Prevent duplicate embedding records if re-running or racing
+            ev_ids = [ev.id for ev in all_evidence]
+            existing_emb_ids = set()
+            if ev_ids:
+                emb_check_stmt = select(Embedding.evidence_id).where(Embedding.evidence_id.in_(ev_ids))
+                emb_check_res = await db.execute(emb_check_stmt)
+                existing_emb_ids = set(emb_check_res.scalars().all())
+
             for ev in all_evidence:
                 await self.retriever.index_evidence(
                     evidence_id=ev.id,
@@ -592,10 +600,12 @@ class PipelineService:
                     meta=ev.meta or {},
                 )
 
-                # Persist embedding vector representation
-                vector = self.embedder.embed_text(f"{ev.title}\n{ev.content}")
-                emb_record = Embedding(evidence_id=ev.id, vector_data=vector)
-                db.add(emb_record)
+                # Persist embedding vector representation if not already persisted
+                if ev.id not in existing_emb_ids:
+                    vector = self.embedder.embed_text(f"{ev.title}\n{ev.content}")
+                    emb_record = Embedding(evidence_id=ev.id, vector_data=vector)
+                    db.add(emb_record)
+                    existing_emb_ids.add(ev.id)
 
             await db.flush()
 
@@ -723,14 +733,14 @@ class PipelineService:
             logger.info(f"Analysis {analysis.id} completed successfully. LARP Score: {larp_score}")
 
         except GroqRateLimitError as e:
-            logger.error(f"Analysis {analysis_id} halted due to Groq rate limit: {e}")
+            logger.error(f"Analysis {analysis_id} halted due to provider rate limit: {e}")
             await db.rollback()
             try:
                 analysis = await db.get(Analysis, analysis_id)
                 if analysis:
                     analysis.status = "failed"
                     analysis.stage = "failed"
-                    analysis.error = "Analysis halted: LLM provider rate limit reached (Groq 429). Please wait a few minutes before retrying."
+                    analysis.error = "Analysis halted: LLM provider rate limit reached (Groq 429). All configured AI providers unavailable. Please retry in a few moments."
                     await db.commit()
             except Exception:
                 pass

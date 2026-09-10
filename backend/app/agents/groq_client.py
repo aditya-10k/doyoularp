@@ -22,7 +22,7 @@ class GroqClient:
     """Wrapper for Groq API with structured JSON output, circuit-breaker, and fallback support."""
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or settings.GROQ_API_KEY
+        self.api_key = api_key if api_key is not None else settings.GROQ_API_KEY
         self.model = model or settings.GROQ_MODEL
         self._client: Optional[AsyncGroq] = None
         if self.api_key:
@@ -30,7 +30,15 @@ class GroqClient:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._client)
+        """Returns True if ANY supported AI provider has an API key configured."""
+        return bool(
+            self.api_key
+            or settings.OPENROUTER_API_KEY
+            or settings.GEMINI_API_KEY
+            or settings.OPENAI_API_KEY
+            or settings.MISTRAL_API_KEY
+            or settings.ANTHROPIC_API_KEY
+        )
 
     async def chat_completion(
         self,
@@ -40,93 +48,139 @@ class GroqClient:
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """Sends a completion request to Groq with rate-limit circuit breaker."""
+        """
+        Sends completion request across configured AI providers in resilient cascade:
+        1. Groq (with model cascade & safe OTPM token limits)
+        2. OpenRouter (free tier / configured models)
+        3. Google Gemini
+        4. OpenAI
+        5. Mistral
+        6. Anthropic
+        """
         global _RATE_LIMITED_UNTIL
         if time.time() < _RATE_LIMITED_UNTIL:
             raise GroqRateLimitError(
-                "Analysis halted: LLM provider rate limit reached (Groq 429). Please wait a few minutes before retrying."
+                "Analysis halted: All configured AI providers rate limited. Please retry in a few moments."
             )
 
-        if not self._client:
-            raise RuntimeError("GROQ_API_KEY is not configured.")
+        if not self.is_configured:
+            raise RuntimeError(
+                "No AI provider API key is configured. Please provide at least one of: "
+                "GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY."
+            )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        # 1. Try Groq (if configured)
+        if self._client:
+            models_to_try = [self.model]
+            for fb in [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "qwen/qwen3.8-27b",
+                "mixtral-8x7b-32768",
+                "gemma2-9b-it",
+            ]:
+                if fb not in models_to_try:
+                    models_to_try.append(fb)
 
-        kwargs: Dict[str, Any] = {
-            "messages": messages,
-            "temperature": temperature,
-        }
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
 
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-            if not max_tokens:
-                max_tokens = 3000
+            for candidate_model in models_to_try:
+                kwargs: Dict[str, Any] = {
+                    "messages": messages,
+                    "temperature": temperature,
+                    "model": candidate_model,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
 
-        if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+                # Enforce safe output token limits so Groq's 1000 OTPM limit is never violated
+                if "qwen" in candidate_model.lower():
+                    kwargs["max_tokens"] = min(max_tokens or 800, 900)
+                else:
+                    kwargs["max_tokens"] = min(max_tokens or 1500, 2500)
 
-        # Candidate model cascade: try primary model, then high-capacity fallback models before failing
-        models_to_try = [self.model]
-        for fb in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
-            if fb not in models_to_try:
-                models_to_try.append(fb)
-
-        last_err = None
-        for candidate_model in models_to_try:
-            kwargs["model"] = candidate_model
-            try:
-                response = await self._client.chat.completions.create(**kwargs)
-                return response.choices[0].message.content or ""
-            except Exception as e:
-                err_str = str(e).lower()
-                last_err = e
-                if (
-                    "rate limit" in err_str
-                    or "429" in err_str
-                    or "try again in" in err_str
-                    or "rate_limit" in err_str
-                    or "tpm" in err_str
-                    or "tpd" in err_str
-                    or "tokens per minute" in err_str
-                    or "tokens per day" in err_str
-                ):
-                    logger.warning(f"Groq model {candidate_model} rate limited: {e}. Trying next candidate model...")
+                try:
+                    response = await self._client.chat.completions.create(**kwargs)
+                    content = response.choices[0].message.content or ""
+                    if content.strip():
+                        return content
+                except Exception as e:
+                    logger.warning(f"Groq model {candidate_model} call failed ({e}). Trying next candidate...")
                     continue
-                logger.error(f"Groq API call error on {candidate_model}: {e}")
-                raise
 
-        # All Groq models in cascade were rate limited or failed: try OpenRouter
-        logger.warning("All Groq candidate models rate limited. Attempting OpenRouter fallback...")
-        openrouter_resp = await self._try_openrouter(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-        )
-        if openrouter_resp:
-            return openrouter_resp
+        # 2. Try OpenRouter (if configured)
+        if settings.OPENROUTER_API_KEY:
+            logger.info("Attempting OpenRouter provider...")
+            openrouter_resp = await self._try_openrouter(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+            )
+            if openrouter_resp:
+                return openrouter_resp
 
-        # OpenRouter unavailable or failed: try Gemini fallback
-        logger.warning("OpenRouter fallback unavailable or rate limited. Attempting Gemini fallback...")
-        gemini_resp = await self._try_gemini(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            json_mode=json_mode,
-        )
-        if gemini_resp:
-            return gemini_resp
+        # 3. Try Gemini (if configured)
+        if settings.GEMINI_API_KEY:
+            logger.info("Attempting Gemini provider...")
+            gemini_resp = await self._try_gemini(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+            )
+            if gemini_resp:
+                return gemini_resp
 
-        # All providers (Groq, OpenRouter, Gemini) exhausted or rate limited
-        _RATE_LIMITED_UNTIL = time.time() + 60.0
-        logger.warning("All LLM providers (Groq, OpenRouter, Gemini) rate limited or unavailable.")
+        # 4. Try OpenAI (if configured)
+        if settings.OPENAI_API_KEY:
+            logger.info("Attempting OpenAI provider...")
+            openai_resp = await self._try_openai(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+            )
+            if openai_resp:
+                return openai_resp
+
+        # 5. Try Mistral (if configured)
+        if settings.MISTRAL_API_KEY:
+            logger.info("Attempting Mistral provider...")
+            mistral_resp = await self._try_mistral(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+            )
+            if mistral_resp:
+                return mistral_resp
+
+        # 6. Try Anthropic (if configured)
+        if settings.ANTHROPIC_API_KEY:
+            logger.info("Attempting Anthropic provider...")
+            anthropic_resp = await self._try_anthropic(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+            )
+            if anthropic_resp:
+                return anthropic_resp
+
+        # All configured providers exhausted or unavailable
+        _RATE_LIMITED_UNTIL = time.time() + 30.0
+        logger.warning("All configured LLM providers rate limited or unavailable.")
         raise GroqRateLimitError(
-            "Analysis halted: LLM provider rate limit reached across all providers. Please wait a few minutes before retrying."
-        ) from last_err
+            "Analysis halted: All configured AI providers rate limited or unavailable. Please retry in a few moments."
+        )
 
     async def _try_openrouter(
         self,
@@ -136,21 +190,32 @@ class GroqClient:
         json_mode: bool,
         max_tokens: Optional[int],
     ) -> Optional[str]:
-        """Fallback to OpenRouter free models."""
+        """Fallback to OpenRouter models."""
         if not settings.OPENROUTER_API_KEY:
             return None
 
         models = [
-            settings.OPENROUTER_MODEL or "nvidia/nemotron-3.5-lightning:free",
-            "nex-agi/nex-n2.5-mini:free",
-            "liquid/lfm-2.5-2.6b:free",
+            settings.OPENROUTER_MODEL or "meta-llama/llama-3.3-70b-instruct:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemini-2.0-flash-exp:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+            "nvidia/nemotron-3.5-lightning:free",
         ]
         headers = {
             "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://doyoularp.com",
+            "X-Title": "doyoularp",
         }
 
+        seen = set()
         for model in models:
+            if model in seen:
+                continue
+            seen.add(model)
+
             payload: Dict[str, Any] = {
                 "model": model,
                 "messages": [
@@ -162,10 +227,10 @@ class GroqClient:
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
             if max_tokens:
-                payload["max_tokens"] = max_tokens
+                payload["max_tokens"] = min(max_tokens, 2500)
 
             try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
+                async with httpx.AsyncClient(timeout=25.0) as client:
                     resp = await client.post(
                         "https://openrouter.ai/api/v1/chat/completions",
                         headers=headers,
@@ -197,12 +262,19 @@ class GroqClient:
             return None
 
         models = [
-            settings.GEMINI_MODEL or "gemini-flash-latest",
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite",
+            settings.GEMINI_MODEL or "gemini-2.0-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-1.5-pro",
         ]
 
+        seen = set()
         for model in models:
+            if model in seen:
+                continue
+            seen.add(model)
+
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={settings.GEMINI_API_KEY}"
             gen_config: Dict[str, Any] = {"temperature": temperature}
             if json_mode:
@@ -215,7 +287,7 @@ class GroqClient:
             }
 
             try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
+                async with httpx.AsyncClient(timeout=20.0) as client:
                     resp = await client.post(url, json=payload)
                     if resp.status_code == 200:
                         data = resp.json()
@@ -229,6 +301,170 @@ class GroqClient:
                         logger.warning(f"Gemini {model} returned status {resp.status_code}: {resp.text[:150]}")
             except Exception as e:
                 logger.warning(f"Gemini {model} request failed: {e}")
+        return None
+
+    async def _try_openai(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+    ) -> Optional[str]:
+        """Fallback to OpenAI models."""
+        if not settings.OPENAI_API_KEY:
+            return None
+
+        models = [settings.OPENAI_MODEL or "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
+        headers = {
+            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        seen = set()
+        for model in models:
+            if model in seen:
+                continue
+            seen.add(model)
+
+            payload: Dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temperature,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            if max_tokens:
+                payload["max_tokens"] = min(max_tokens, 2500)
+
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        choices = data.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content")
+                            if content:
+                                logger.info(f"Successfully received response from OpenAI model: {model}")
+                                return content
+                    else:
+                        logger.warning(f"OpenAI {model} returned status {resp.status_code}: {resp.text[:150]}")
+            except Exception as e:
+                logger.warning(f"OpenAI {model} request failed: {e}")
+        return None
+
+    async def _try_mistral(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+    ) -> Optional[str]:
+        """Fallback to Mistral models."""
+        if not settings.MISTRAL_API_KEY:
+            return None
+
+        models = [settings.MISTRAL_MODEL or "mistral-small-latest", "open-mistral-7b"]
+        headers = {
+            "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        seen = set()
+        for model in models:
+            if model in seen:
+                continue
+            seen.add(model)
+
+            payload: Dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temperature,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            if max_tokens:
+                payload["max_tokens"] = min(max_tokens, 2000)
+
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        "https://api.mistral.ai/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        choices = data.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content")
+                            if content:
+                                logger.info(f"Successfully received response from Mistral model: {model}")
+                                return content
+                    else:
+                        logger.warning(f"Mistral {model} returned status {resp.status_code}: {resp.text[:150]}")
+            except Exception as e:
+                logger.warning(f"Mistral {model} request failed: {e}")
+        return None
+
+    async def _try_anthropic(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+    ) -> Optional[str]:
+        """Fallback to Anthropic models."""
+        if not settings.ANTHROPIC_API_KEY:
+            return None
+
+        models = [settings.ANTHROPIC_MODEL or "claude-3-5-haiku-20241022", "claude-3-haiku-20240307"]
+        headers = {
+            "x-api-key": settings.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        seen = set()
+        for model in models:
+            if model in seen:
+                continue
+            seen.add(model)
+
+            payload: Dict[str, Any] = {
+                "model": model,
+                "system": system_prompt + ("\nRespond strictly with a valid JSON object." if json_mode else ""),
+                "messages": [{"role": "user", "content": user_prompt}],
+                "temperature": temperature,
+                "max_tokens": min(max_tokens or 1500, 3000),
+            }
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    resp = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers=headers,
+                        json=payload,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content_list = data.get("content", [])
+                        if content_list and content_list[0].get("text"):
+                            logger.info(f"Successfully received response from Anthropic model: {model}")
+                            return content_list[0]["text"]
+                    else:
+                        logger.warning(f"Anthropic {model} returned status {resp.status_code}: {resp.text[:150]}")
+            except Exception as e:
+                logger.warning(f"Anthropic {model} request failed: {e}")
         return None
 
     def extract_json(self, text: Optional[str]) -> Dict[str, Any]:

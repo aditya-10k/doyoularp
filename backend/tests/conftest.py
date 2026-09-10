@@ -11,12 +11,22 @@ async def setup_database():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def disable_live_groq_for_tests():
+def disable_live_ai_for_tests():
     from backend.app.core.config import settings
-    original_key = settings.GROQ_API_KEY
-    settings.GROQ_API_KEY = ""
+    keys = [
+        "GROQ_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ]
+    original = {k: getattr(settings, k) for k in keys}
+    for k in keys:
+        setattr(settings, k, "")
     yield
-    settings.GROQ_API_KEY = original_key
+    for k, v in original.items():
+        setattr(settings, k, v)
 
 
 @pytest.fixture(autouse=True)

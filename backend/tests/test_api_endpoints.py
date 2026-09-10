@@ -14,6 +14,19 @@ def generate_dummy_pdf() -> bytes:
     return buf.getvalue()
 
 
+def generate_dummy_pdf_with_github() -> bytes:
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_uri(
+        page_number=0,
+        uri="https://github.com/testuser/testproject",
+        rect=(100, 100, 200, 120),
+    )
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
 @pytest.mark.asyncio
 async def test_health_check(client: httpx.AsyncClient):
     resp = await client.get("/health")
@@ -96,11 +109,13 @@ async def test_pipeline_rate_limit_failure(client: httpx.AsyncClient):
     assert create_resp.status_code == 201
     analysis_id = create_resp.json()["analysis_id"]
 
-    # 2. Upload dummy PDF
-    pdf_bytes = generate_dummy_pdf()
+    # 2. Upload dummy PDF with GitHub link while patching background task
+    from unittest.mock import patch
+    pdf_bytes = generate_dummy_pdf_with_github()
     files = {"file": ("test_resume.pdf", pdf_bytes, "application/pdf")}
-    upload_resp = await client.post(f"/api/v1/analyses/{analysis_id}/resume", files=files)
-    assert upload_resp.status_code == 200
+    with patch("backend.app.api.routes.analyses._run_pipeline_background", new_callable=AsyncMock):
+        upload_resp = await client.post(f"/api/v1/analyses/{analysis_id}/resume", files=files)
+        assert upload_resp.status_code == 200
 
     # 3. Mock evaluation_agent to raise GroqRateLimitError
     pipeline_service = PipelineService()
