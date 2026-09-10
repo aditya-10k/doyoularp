@@ -73,11 +73,12 @@ class GroqClient:
         if self._client:
             models_to_try = [self.model]
             for fb in [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
+                "openai/gpt-oss-20b",
+                "groq/compound-mini",
+                "openai/gpt-oss-120b",
+                "groq/compound",
+                "qwen/qwen3.6-27b",
                 "qwen/qwen3.8-27b",
-                "mixtral-8x7b-32768",
-                "gemma2-9b-it",
             ]:
                 if fb not in models_to_try:
                     models_to_try.append(fb)
@@ -88,28 +89,41 @@ class GroqClient:
             ]
 
             for candidate_model in models_to_try:
-                kwargs: Dict[str, Any] = {
+                base_kwargs: Dict[str, Any] = {
                     "messages": messages,
                     "temperature": temperature,
                     "model": candidate_model,
                 }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
 
-                # Enforce safe output token limits so Groq's 1000 OTPM limit is never violated
-                if "qwen" in candidate_model.lower():
-                    kwargs["max_tokens"] = min(max_tokens or 800, 900)
+                # Enforce safe output token limits per model tier
+                if "qwen/qwen3.8-27b" in candidate_model.lower():
+                    base_kwargs["max_tokens"] = min(max_tokens or 750, 850)
                 else:
-                    kwargs["max_tokens"] = min(max_tokens or 1500, 2500)
+                    base_kwargs["max_tokens"] = min(max_tokens or 1500, 2500)
 
-                try:
-                    response = await self._client.chat.completions.create(**kwargs)
-                    content = response.choices[0].message.content or ""
-                    if content.strip():
-                        return content
-                except Exception as e:
-                    logger.warning(f"Groq model {candidate_model} call failed ({e}). Trying next candidate...")
-                    continue
+                # If json_mode requested, attempt with response_format first, but if Groq's
+                # schema validator rejects with json_validate_failed (400), retry without response_format
+                # so our robust Python extract_json parser can extract the JSON payload.
+                modes = [True, False] if json_mode else [False]
+                success = False
+                for try_json in modes:
+                    kwargs = dict(base_kwargs)
+                    if try_json:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    try:
+                        response = await self._client.chat.completions.create(**kwargs)
+                        content = response.choices[0].message.content or ""
+                        if content.strip():
+                            return content
+                    except Exception as e:
+                        err_str = str(e)
+                        if try_json and ("json_validate_failed" in err_str or "Failed to generate JSON" in err_str):
+                            logger.warning(
+                                f"Groq model {candidate_model} returned json_validate_failed. Retrying without response_format..."
+                            )
+                            continue
+                        logger.warning(f"Groq model {candidate_model} call failed ({e}). Trying next candidate...")
+                        break
 
         # 2. Try OpenRouter (if configured)
         if settings.OPENROUTER_API_KEY:
