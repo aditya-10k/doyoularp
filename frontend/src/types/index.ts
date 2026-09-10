@@ -53,6 +53,7 @@ export interface ResultResponse {
   strongest_claim?: string | null;
   weakest_claim?: string | null;
   funny_mismatch?: string | null;
+  derogatory_versions?: string[] | null;
   claims_count: number;
   claims_breakdown: Claim[];
   sources: SourceSummary[];

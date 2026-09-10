@@ -40,6 +40,17 @@ export default function ResultDashboard({
     return c.evaluation?.verdict === activeFilter;
   });
 
+  const defaultDerogatory = [
+    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.",
+    "Submitting a software resume without GitHub is like applying to be an airline pilot by showing a picture of a bird.",
+    "You spent more time selecting fonts on this PDF than writing actual code. Cancel the interviews and go become an influencer.",
+    "If your code is operating in stealth mode, your job search should be operating in stealth mode as well.",
+    "What was the master strategy? Hope the interviewer doesn't know what a version control system is?",
+  ];
+
+  const derogatoryList = result.derogatory_versions?.length ? result.derogatory_versions : defaultDerogatory;
+  const [activeQuoteIdx, setActiveQuoteIdx] = useState<number>(0);
+
   const hasGithub = result.sources?.some((s) => s.type === "github");
 
   return (
@@ -82,17 +93,44 @@ export default function ResultDashboard({
 
         {/* Missing GitHub Savage Reality Check Banner */}
         {!hasGithub && (
-          <div className="border border-red-600 bg-red-950/40 p-5 space-y-2 mt-6">
-            <div className="flex items-center gap-2">
+          <div className="border-2 border-red-600 bg-red-950/40 p-5 space-y-4 mt-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-900/50 pb-3">
               <span className="font-mono text-xs font-black uppercase tracking-widest text-red-500">
                 [ CRITICAL OFFENSE // ZERO GITHUB PROVENANCE ]
               </span>
+              <button
+                type="button"
+                onClick={() => setActiveQuoteIdx((prev) => (prev + 1) % derogatoryList.length)}
+                className="font-mono text-[10px] uppercase tracking-wider text-red-400 border border-red-800/80 px-2.5 py-1 bg-black/60 hover:border-red-500 hover:text-white transition-all w-fit"
+              >
+                REROLL VERDICT ({activeQuoteIdx + 1}/{derogatoryList.length})
+              </button>
             </div>
-            <p className="font-mono text-sm sm:text-base font-bold text-red-200">
-              &ldquo;Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.&rdquo;
+            <p className="font-mono text-base sm:text-lg font-bold text-red-200 leading-relaxed italic">
+              &ldquo;{derogatoryList[activeQuoteIdx]}&rdquo;
             </p>
-            <p className="font-mono text-xs text-zinc-400">
-              Candidate submitted an engineering resume without linking a GitHub profile or repository receipts. Automatic maximum LARP penalties and reality autopsy applied.
+            <div className="border-t border-red-900/40 pt-3 space-y-2">
+              <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">
+                DEROGATORY REALITY CHECKS (SELECT TO VIEW):
+              </span>
+              <ul className="space-y-1.5">
+                {derogatoryList.map((quote, idx) => (
+                  <li
+                    key={idx}
+                    onClick={() => setActiveQuoteIdx(idx)}
+                    className={`cursor-pointer font-mono text-xs transition-colors p-1.5 rounded border ${
+                      idx === activeQuoteIdx
+                        ? "border-red-700 bg-red-950/60 text-red-200 font-bold"
+                        : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-black/30"
+                    }`}
+                  >
+                    &bull; {quote}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="font-mono text-xs text-zinc-400 pt-1">
+              Candidate submitted an engineering resume without linking a GitHub profile or repository receipts. Pipeline aborted immediately with maximum LARP verdict.
             </p>
           </div>
         )}

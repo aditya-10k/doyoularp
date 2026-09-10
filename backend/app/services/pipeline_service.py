@@ -54,6 +54,53 @@ ANONYMOUS_ALIASES = [
     "GraphQL Prophet",
 ]
 
+DEROGATORY_VERSIONS_LIST = [
+    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.",
+    "Submitting a software resume without GitHub is like applying to be an airline pilot by showing a picture of a bird.",
+    "You spent more time selecting fonts on this PDF than writing actual code. Cancel the interviews and go become an influencer.",
+    "If your code is operating in stealth mode, your job search should be operating in stealth mode as well.",
+    "What was the master strategy? Hope the interviewer doesn't know what a version control system is?",
+]
+
+DEROGATORY_NO_GITHUB_ROASTS = [
+    (
+        "No GitHub link found anywhere in this resume. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+        "You had the audacity to submit a technical engineering resume loaded with project claims, architectural buzzwords, and claimed proficiencies, yet you could not produce a single public GitHub link, repository, or commit receipt. "
+        "In an industry where the only real proof of competence is running code, you decided that your word alone was worth six figures.\n\n"
+        "There are no commit timestamps. There are no pull requests. There are no Docker containers. There is only a PDF document constructed from pure LinkedIn fiction and wishful thinking. "
+        "If you want to be taken seriously as an engineer, publish your code. Until then, you are simply roleplaying in a developer costume."
+    ),
+    (
+        "No GitHub link found in this resume. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+        "Submitting a software engineering resume without a GitHub profile is the technical equivalent of applying to be an airline pilot by showing a picture of a bird. "
+        "You expect hiring managers to take your claims of 'spearheading distributed architectures' and 'optimizing mission-critical databases' on blind faith while you hide in the witness protection program of software development.\n\n"
+        "Zero repositories. Zero commit history. Zero public code provenance. You brought a beautifully typeset piece of fiction to a technical audit. "
+        "Either publish the receipts or pivot to lifestyle content creation full-time."
+    ),
+    (
+        "No GitHub link found. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+        "You spent more time selecting fonts, aligning margins, and agonizing over bullet point spacing on this PDF than you have ever spent writing production code. "
+        "You claim proficiency in entire technology stacks, yet you couldn't even manage to paste a single GitHub URL onto the page. "
+        "What was the master strategy here? Hope the interviewer doesn't know what a version control system is?\n\n"
+        "In a field defined strictly by what you build and ship, you brought pure vaporware. "
+        "Cancel the upcoming interviews, close your code editor, and re-evaluate your life choices."
+    ),
+    (
+        "No GitHub link found. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+        "You threw around terms like 'scalable microservices', 'event-driven pipelines', and 'full-stack engineering', yet you failed to provide even the most elementary proof of existence. "
+        "A developer without a GitHub presence in 2026 is indistinguishable from an AI chatbot hallucinating a career into a resume generator.\n\n"
+        "You have zero public code, zero receipts, and zero grounds to claim software competence. "
+        "If your code is operating in stealth mode, your job search should be operating in stealth mode as well."
+    ),
+    (
+        "No GitHub link found anywhere on this document. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
+        "Did you genuinely believe that reciting three years of tech Twitter buzzwords on a PDF would substitute for actual public repositories? "
+        "You are asking someone to hire an engineer who apparently writes code exclusively on confidential napkins or in alternate dimensions.\n\n"
+        "There is nothing to audit because there is nothing here. No code, no commits, no proof. "
+        "Take this resume, throw it in the recycling bin, and go learn git."
+    ),
+]
+
 
 class PipelineService:
     def __init__(
@@ -138,6 +185,83 @@ class PipelineService:
                 db.add(src)
                 discovered_sources.append(src)
             await db.flush()
+
+            # Fast abort if no GitHub link is found: do not go through the entire pipeline
+            has_github = (
+                any(s.type == "github" for s in discovered_sources)
+                or ("github.com" in (parsed_pdf.raw_text or "").lower())
+            )
+
+            if not has_github:
+                logger.info(
+                    f"Analysis {analysis.id}: No GitHub link discovered in resume. "
+                    "Aborting pipeline immediately with maximum LARP verdict."
+                )
+
+                selected_roast = random.choice(DEROGATORY_NO_GITHUB_ROASTS)
+                verdict_summary = (
+                    "FATAL PHANTOM DETECTED: Zero GitHub link or code provenance found in resume. "
+                    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you. 100% unverified buzzword fiction."
+                )
+                funny_mismatch = "No GitHub link found: Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you."
+                weakest_claim = "Zero GitHub profile or repository links provided in resume"
+
+                # Add an explicit contradicted claim so the evidence inspection UI details the violation
+                claim_obj = Claim(
+                    analysis_id=analysis.id,
+                    resume_id=resume.id,
+                    claim_text="Verifiable public GitHub repository code provenance",
+                    category="provenance",
+                    section="links",
+                    source_text="Candidate provided zero GitHub profile or repository URLs across the entire resume.",
+                    meta={"technologies": [], "project_name": "GitHub Provenance"},
+                )
+                db.add(claim_obj)
+                await db.flush()
+
+                eval_record = Evaluation(
+                    claim_id=claim_obj.id,
+                    verdict="CONTRADICTED",
+                    confidence=1.0,
+                    reasoning="Technical engineering resume submitted without linking a GitHub profile or public code repositories. Provenance completely contradicted.",
+                )
+                db.add(eval_record)
+
+                candidate = await db.get(Candidate, analysis.candidate_id)
+                alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
+
+                summary_payload = json.dumps({
+                    "verdict_summary": verdict_summary,
+                    "funny_mismatch": funny_mismatch,
+                    "weakest_claim": weakest_claim,
+                    "derogatory_versions": DEROGATORY_VERSIONS_LIST,
+                })
+
+                stmt_existing = select(LeaderboardEntry).where(LeaderboardEntry.analysis_id == analysis.id)
+                existing_res = await db.execute(stmt_existing)
+                existing_entry = existing_res.scalar_one_or_none()
+
+                if existing_entry:
+                    existing_entry.larp_score = 100.0
+                    existing_entry.roast = selected_roast
+                    existing_entry.summary = summary_payload
+                else:
+                    leaderboard_entry = LeaderboardEntry(
+                        analysis_id=analysis.id,
+                        anonymous_alias=alias_name,
+                        larp_score=100.0,
+                        roast=selected_roast,
+                        summary=summary_payload,
+                        token=str(uuid.uuid4()).replace("-", ""),
+                    )
+                    db.add(leaderboard_entry)
+
+                analysis.status = "completed"
+                analysis.stage = "completed"
+                analysis.progress = 100
+                analysis.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+                return
 
             # 3. Extracting Resume Claims
             analysis.stage = "extracting_claims"

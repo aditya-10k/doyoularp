@@ -19,6 +19,7 @@ class ResultResponse(BaseModel):
     strongest_claim: Optional[str] = None
     weakest_claim: Optional[str] = None
     funny_mismatch: Optional[str] = None
+    derogatory_versions: Optional[List[str]] = None
     claims_count: int
     claims_breakdown: List[ClaimResponse]
     sources: List[SourceSummary]
