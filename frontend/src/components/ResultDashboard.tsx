@@ -19,6 +19,8 @@ export default function ResultDashboard({
 }: ResultDashboardProps) {
   const [copied, setCopied] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>("ALL");
+  const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
+  const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined);
 
   const handleCopyRoast = () => {
     navigator.clipboard.writeText(result.roast);
@@ -35,21 +37,27 @@ export default function ResultDashboard({
 
   const scoreClass = getScoreClassification(result.larp_score);
 
+  const supportedCount = result.claims_breakdown.filter((c) => c.evaluation?.verdict === "SUPPORTED").length;
+  const partiallyCount = result.claims_breakdown.filter((c) => c.evaluation?.verdict === "PARTIALLY_SUPPORTED").length;
+  const unverifiedCount = result.claims_breakdown.filter((c) => c.evaluation?.verdict === "UNVERIFIED").length;
+  const contradictedCount = result.claims_breakdown.filter((c) => c.evaluation?.verdict === "CONTRADICTED").length;
+
+  const categories = ["ALL", ...Array.from(new Set(result.claims_breakdown.map((c) => c.category.toUpperCase())))];
+
   const filteredClaims = result.claims_breakdown.filter((c) => {
-    if (activeFilter === "ALL") return true;
-    return c.evaluation?.verdict === activeFilter;
+    const verdictMatch = activeFilter === "ALL" || c.evaluation?.verdict === activeFilter;
+    const catMatch = categoryFilter === "ALL" || c.category.toUpperCase() === categoryFilter;
+    return verdictMatch && catMatch;
   });
 
-  const defaultDerogatory = [
-    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.",
-    "Submitting a software resume without GitHub is like applying to be an airline pilot by showing a picture of a bird.",
-    "You spent more time selecting fonts on this PDF than writing actual code. Cancel the interviews and go become an influencer.",
-    "If your code is operating in stealth mode, your job search should be operating in stealth mode as well.",
-    "What was the master strategy? Hope the interviewer doesn't know what a version control system is?",
-  ];
-
-  const derogatoryList = result.derogatory_versions?.length ? result.derogatory_versions : defaultDerogatory;
-  const [activeQuoteIdx, setActiveQuoteIdx] = useState<number>(0);
+  const getSourceBadgeStyle = (type: string) => {
+    const t = type.toLowerCase();
+    if (t === "github") return "border-purple-800/80 text-purple-300 bg-purple-950/30";
+    if (t === "leetcode") return "border-amber-700/80 text-amber-300 bg-amber-950/30";
+    if (t === "codeforces") return "border-blue-700/80 text-blue-300 bg-blue-950/30";
+    if (t === "linkedin") return "border-sky-700/80 text-sky-300 bg-sky-950/30";
+    return "border-zinc-800 text-zinc-300 bg-zinc-950";
+  };
 
   const hasGithub = result.sources?.some((s) => s.type === "github");
 
@@ -127,71 +135,127 @@ export default function ResultDashboard({
           </div>
 
           {/* LARP Score Metric */}
-          <div className="flex items-center gap-4 border border-zinc-800 bg-black/60 px-6 py-4">
-            <div>
-              <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 block">
-                LARP SCORE
+          <div className="flex flex-col border border-zinc-800 bg-black/60 px-6 py-4 min-w-[220px]">
+            <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-500 block">
+              LARP SCORE
+            </span>
+            <div className="flex items-baseline gap-1">
+              <span className={`font-mono text-4xl sm:text-5xl font-black ${scoreClass.color}`}>
+                {result.larp_score.toFixed(1)}
               </span>
-              <div className="flex items-baseline gap-1">
-                <span className="font-mono text-4xl sm:text-5xl font-black text-red-500">
-                  {result.larp_score.toFixed(1)}
-                </span>
-                <span className="font-mono text-xs text-zinc-600">/100</span>
-              </div>
+              <span className="font-mono text-xs text-zinc-600">/100</span>
+            </div>
+
+            {/* Visual Spectrum Bar */}
+            <div className="w-full mt-3 bg-zinc-900 h-2 rounded-full overflow-hidden flex relative" title={`LARP Score: ${result.larp_score.toFixed(1)}/100`}>
+              <div className="h-full bg-emerald-500 w-1/4" title="Authentic (0-25)" />
+              <div className="h-full bg-amber-500 w-1/4" title="Modest Exaggeration (25-50)" />
+              <div className="h-full bg-orange-500 w-1/4" title="High Fiction (50-80)" />
+              <div className="h-full bg-red-600 w-1/4" title="Olympic LARP (80-100)" />
+              <div
+                className="absolute top-0 bottom-0 w-1.5 bg-white shadow-[0_0_8px_rgba(255,255,255,0.9)] -translate-x-1/2 rounded"
+                style={{ left: `${Math.min(Math.max(result.larp_score, 2), 98)}%` }}
+              />
+            </div>
+            <div className="flex justify-between items-center text-[9px] font-mono text-zinc-500 mt-1">
+              <span>0 (AUTHENTIC)</span>
+              <span>100 (DELUSION)</span>
             </div>
           </div>
         </div>
 
-        {/* Missing GitHub Savage Reality Check Banner */}
+        {/* Quick Claims Metrics Summary Strip (Clickable Interactive Filter Cards) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-6 border-b border-zinc-800/80 pb-6">
+          <button
+            type="button"
+            onClick={() => setActiveFilter(activeFilter === "SUPPORTED" ? "ALL" : "SUPPORTED")}
+            className={`border p-3 text-center transition-all cursor-pointer ${
+              activeFilter === "SUPPORTED"
+                ? "border-emerald-400 bg-emerald-950/60 ring-1 ring-emerald-400"
+                : "border-emerald-900/60 bg-emerald-950/20 hover:border-emerald-700 hover:bg-emerald-950/30"
+            }`}
+          >
+            <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">SUPPORTED</span>
+            <span className="font-mono text-xl font-bold text-emerald-400 mt-0.5 block">{supportedCount}</span>
+            <span className="font-mono text-[9px] text-emerald-500/70 uppercase block mt-0.5">
+              {activeFilter === "SUPPORTED" ? "Filtered" : "Click to filter"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveFilter(activeFilter === "PARTIALLY_SUPPORTED" ? "ALL" : "PARTIALLY_SUPPORTED")}
+            className={`border p-3 text-center transition-all cursor-pointer ${
+              activeFilter === "PARTIALLY_SUPPORTED"
+                ? "border-amber-400 bg-amber-950/60 ring-1 ring-amber-400"
+                : "border-amber-900/60 bg-amber-950/20 hover:border-amber-700 hover:bg-amber-950/30"
+            }`}
+          >
+            <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">PARTIAL</span>
+            <span className="font-mono text-xl font-bold text-amber-400 mt-0.5 block">{partiallyCount}</span>
+            <span className="font-mono text-[9px] text-amber-500/70 uppercase block mt-0.5">
+              {activeFilter === "PARTIALLY_SUPPORTED" ? "Filtered" : "Click to filter"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveFilter(activeFilter === "UNVERIFIED" ? "ALL" : "UNVERIFIED")}
+            className={`border p-3 text-center transition-all cursor-pointer ${
+              activeFilter === "UNVERIFIED"
+                ? "border-zinc-400 bg-zinc-900/80 ring-1 ring-zinc-400"
+                : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900/40"
+            }`}
+          >
+            <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">UNVERIFIED</span>
+            <span className="font-mono text-xl font-bold text-zinc-400 mt-0.5 block">{unverifiedCount}</span>
+            <span className="font-mono text-[9px] text-zinc-500 uppercase block mt-0.5">
+              {activeFilter === "UNVERIFIED" ? "Filtered" : "Click to filter"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveFilter(activeFilter === "CONTRADICTED" ? "ALL" : "CONTRADICTED")}
+            className={`border p-3 text-center transition-all cursor-pointer ${
+              activeFilter === "CONTRADICTED"
+                ? "border-red-500 bg-red-950/60 ring-1 ring-red-500"
+                : "border-red-900/60 bg-red-950/20 hover:border-red-700 hover:bg-red-950/30"
+            }`}
+          >
+            <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">CONTRADICTED</span>
+            <span className="font-mono text-xl font-bold text-red-500 mt-0.5 block">{contradictedCount}</span>
+            <span className="font-mono text-[9px] text-red-500/70 uppercase block mt-0.5">
+              {activeFilter === "CONTRADICTED" ? "Filtered" : "Click to filter"}
+            </span>
+          </button>
+        </div>
+
+        {/* Zero GitHub Notice */}
         {!hasGithub && (
-          <div className="border-2 border-red-600 bg-red-950/40 p-5 space-y-4 mt-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-900/50 pb-3">
-              <span className="font-mono text-xs font-black uppercase tracking-widest text-red-500">
-                [ CRITICAL OFFENSE // ZERO GITHUB PROVENANCE ]
-              </span>
-              <button
-                type="button"
-                onClick={() => setActiveQuoteIdx((prev) => (prev + 1) % derogatoryList.length)}
-                className="font-mono text-[10px] uppercase tracking-wider text-red-400 border border-red-800/80 px-2.5 py-1 bg-black/60 hover:border-red-500 hover:text-white transition-all w-fit"
-              >
-                REROLL VERDICT ({activeQuoteIdx + 1}/{derogatoryList.length})
-              </button>
-            </div>
-            <p className="font-mono text-base sm:text-lg font-bold text-red-200 leading-relaxed italic">
-              &ldquo;{derogatoryList[activeQuoteIdx]}&rdquo;
-            </p>
-            <div className="border-t border-red-900/40 pt-3 space-y-2">
-              <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest block">
-                DEROGATORY REALITY CHECKS (SELECT TO VIEW):
-              </span>
-              <ul className="space-y-1.5">
-                {derogatoryList.map((quote, idx) => (
-                  <li
-                    key={idx}
-                    onClick={() => setActiveQuoteIdx(idx)}
-                    className={`cursor-pointer font-mono text-xs transition-colors p-1.5 rounded border ${
-                      idx === activeQuoteIdx
-                        ? "border-red-700 bg-red-950/60 text-red-200 font-bold"
-                        : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-black/30"
-                    }`}
-                  >
-                    &bull; {quote}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <p className="font-mono text-xs text-zinc-400 pt-1">
-              Candidate submitted an engineering resume without linking a GitHub profile or repository receipts. Pipeline aborted immediately with maximum LARP verdict.
+          <div className="border border-amber-700/80 bg-amber-950/20 p-4 space-y-2 mt-6">
+            <span className="font-mono text-xs font-bold uppercase tracking-widest text-amber-400 block">
+              [ NOTICE: ZERO GITHUB LINK FOUND IN RESUME ]
+            </span>
+            <p className="font-mono text-xs text-zinc-300 leading-relaxed">
+              No public GitHub profile link was provided in the document. Evaluated across external links, competitive programming platforms (LeetCode / Codeforces), LinkedIn footprints, and cross-referenced claims.
             </p>
           </div>
         )}
 
         {/* The Brutal Roast Block */}
-        <div className="pt-6 space-y-6">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-xs uppercase tracking-widest text-red-500 font-bold">
-              [ OFFICIAL VERDICT ROAST ]
-            </span>
+        <div className="pt-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs uppercase tracking-widest text-red-500 font-bold">
+                [ OFFICIAL VERDICT ROAST ]
+              </span>
+              {result.roast_archetype && (
+                <span className="border border-red-800 bg-red-950/60 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-red-300">
+                  PERSONA: {result.roast_archetype.replace(/_/g, " ").toUpperCase()}
+                </span>
+              )}
+            </div>
             <button
               onClick={handleCopyRoast}
               className="flex items-center gap-1.5 font-mono text-xs text-zinc-400 hover:text-zinc-100 transition-colors"
@@ -257,11 +321,11 @@ export default function ResultDashboard({
                 href={s.url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-2 border border-zinc-800 bg-zinc-950 px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-600 hover:text-white transition-colors"
+                className={`inline-flex items-center gap-2 border px-3 py-1.5 font-mono text-xs hover:border-zinc-500 hover:text-white transition-colors ${getSourceBadgeStyle(s.type)}`}
               >
-                <span className="uppercase text-[10px] text-red-400 font-semibold">{s.type}:</span>
+                <span className="uppercase text-[10px] font-bold">{s.type}:</span>
                 <span className="truncate max-w-[200px]">{s.url.replace(/^https?:\/\//, "")}</span>
-                <ExternalLink className="h-3 w-3 text-zinc-500 shrink-0" />
+                <ExternalLink className="h-3 w-3 opacity-60 shrink-0" />
               </a>
             ))}
           </div>
@@ -273,40 +337,82 @@ export default function ResultDashboard({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h3 className="font-mono text-base font-bold uppercase tracking-wider text-zinc-100">
-              CLAIM BREAKDOWN ({result.claims_count})
+              CLAIM BREAKDOWN ({filteredClaims.length} of {result.claims_count})
             </h3>
             <span className="font-mono text-xs text-zinc-500">
               EVIDENCE-GROUNDED VERDICT ANALYSIS
             </span>
           </div>
 
-          {/* Filter Tabs */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExpandAll(prev => prev === true ? false : true)}
+              className="border border-zinc-700 bg-zinc-900/80 hover:border-zinc-500 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-zinc-300 hover:text-white transition-colors"
+            >
+              {expandAll ? "COLLAPSE ALL" : "EXPAND ALL REASONING"}
+            </button>
+          </div>
+        </div>
+
+        {/* Multi-Dimensional Filter Controls */}
+        <div className="flex flex-col gap-2.5 bg-black/40 border border-zinc-800/80 p-3">
+          {/* Verdict Filter Tabs */}
           <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
-            {["ALL", "SUPPORTED", "PARTIALLY_SUPPORTED", "UNVERIFIED", "CONTRADICTED"].map((f) => (
+            <span className="text-[10px] uppercase text-zinc-500 tracking-wider mr-1">VERDICT:</span>
+            {[
+              { id: "ALL", label: `ALL (${result.claims_count})` },
+              { id: "SUPPORTED", label: `SUPPORTED (${supportedCount})` },
+              { id: "PARTIALLY_SUPPORTED", label: `PARTIAL (${partiallyCount})` },
+              { id: "UNVERIFIED", label: `UNVERIFIED (${unverifiedCount})` },
+              { id: "CONTRADICTED", label: `CONTRADICTED (${contradictedCount})` },
+            ].map(({ id, label }) => (
               <button
-                key={f}
-                onClick={() => setActiveFilter(f)}
+                key={id}
+                type="button"
+                onClick={() => setActiveFilter(id)}
                 className={`px-2.5 py-1 border transition-colors ${
-                  activeFilter === f
+                  activeFilter === id
                     ? "border-red-600 bg-red-950/40 text-red-400 font-semibold"
                     : "border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                 }`}
               >
-                {f.replace("_", " ")}
+                {label}
               </button>
             ))}
           </div>
+
+          {/* Category Filter Tabs */}
+          {categories.length > 2 && (
+            <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs pt-1 border-t border-zinc-900">
+              <span className="text-[10px] uppercase text-zinc-500 tracking-wider mr-1">SECTION:</span>
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setCategoryFilter(cat)}
+                  className={`px-2 py-0.5 border text-[11px] transition-colors ${
+                    categoryFilter === cat
+                      ? "border-zinc-400 bg-zinc-800 text-zinc-100 font-medium"
+                      : "border-zinc-800/80 bg-zinc-950/40 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300"
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Claim Cards List */}
         <div className="space-y-3">
           {filteredClaims.length > 0 ? (
             filteredClaims.map((claim) => (
-              <ClaimCard key={claim.id} claim={claim} />
+              <ClaimCard key={claim.id} claim={claim} forceExpanded={expandAll} />
             ))
           ) : (
             <div className="border border-zinc-800 p-8 text-center font-mono text-xs text-zinc-500">
-              No claims match filter &apos;{activeFilter}&apos;.
+              No claims match current filter selection (Verdict: &apos;{activeFilter}&apos;, Section: &apos;{categoryFilter}&apos;).
             </div>
           )}
         </div>

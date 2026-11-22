@@ -18,13 +18,26 @@ class Settings(BaseSettings):
 
     # External Data Sources
     GITHUB_TOKEN: Optional[str] = None
+    GITHUB_TOKENS: Optional[str] = None  # Comma-separated list for token rotation
+    JINA_API_KEY: Optional[str] = None
+    TAVILY_API_KEY: Optional[str] = None
+    SERPER_API_KEY: Optional[str] = None
 
-    # Multi-Provider AI Support (Groq, OpenRouter, Gemini, OpenAI, Mistral, Anthropic)
+    # Multi-Provider AI Support (Groq, Cerebras, GitHub Models, SambaNova, Gemini, OpenRouter, OpenAI, Mistral, Anthropic)
+    CEREBRAS_API_KEY: Optional[str] = None
+    CEREBRAS_MODEL: str = "llama-3.3-70b"
+
+    GITHUB_MODELS_TOKEN: Optional[str] = None
+    GITHUB_MODELS_MODEL: str = "gpt-4o-mini"
+
+    SAMBANOVA_API_KEY: Optional[str] = None
+    SAMBANOVA_MODEL: str = "Meta-Llama-3.3-70B-Instruct"
+
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_MODEL: str = "google/gemma-4-31b-it:free"
 
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -34,6 +47,14 @@ class Settings(BaseSettings):
 
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-3-5-haiku-20241022"
+
+    # System 1: Local Fast NLI Cross-Encoder (ONNX Runtime)
+    ENABLE_SYSTEM1: bool = True
+    SYSTEM1_ALLOW_CONTRADICTION: bool = False  # Keep triage contradiction off by default to prevent false negatives on partial chunks
+    SYSTEM1_MODEL_PATH: Optional[str] = None
+    SYSTEM1_MODEL_NAME: str = "Xenova/nli-deberta-v3-small"
+    SYSTEM1_ENTAILMENT_THRESHOLD: float = 0.70
+    SYSTEM1_CONTRADICTION_THRESHOLD: float = 0.88
 
     # Scoring & Intensity
     ROAST_INTENSITY: int = 3  # 0 to 4

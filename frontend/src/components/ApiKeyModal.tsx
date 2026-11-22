@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Key, X, ShieldCheck, Eye, EyeOff, Plus, Trash2, Check } from "lucide-react";
+import { Key, X, ShieldCheck, Eye, EyeOff, Plus, Trash2, Check, ExternalLink } from "lucide-react";
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -9,7 +9,7 @@ interface ApiKeyModalProps {
   onKeySaved?: () => void;
 }
 
-export type ProviderType = "groq" | "gemini" | "openrouter" | "openai";
+export type ProviderType = "groq" | "cerebras" | "github_models" | "sambanova" | "gemini" | "openrouter" | "openai";
 
 export interface StoredApiKey {
   id: string;
@@ -18,19 +18,45 @@ export interface StoredApiKey {
   createdAt: number;
 }
 
-const PROVIDERS: { id: ProviderType; name: string; desc: string; freeTier: string; placeholder: string }[] = [
+const PROVIDERS: { id: ProviderType; name: string; desc: string; freeTier: string; url: string; placeholder: string }[] = [
+  {
+    id: "cerebras",
+    name: "Cerebras Cloud",
+    desc: "Ultra-fast ~2,000 tokens/sec Llama 3.3 70B inference on wafer-scale chips.",
+    freeTier: "Free key at cloud.cerebras.ai",
+    url: "https://cloud.cerebras.ai",
+    placeholder: "csk-...",
+  },
+  {
+    id: "github_models",
+    name: "GitHub Models",
+    desc: "Free GPT-4o-mini & Llama 3.3 70B using your standard GitHub Personal Access Token.",
+    freeTier: "Generate PAT with read access at github.com/settings/tokens",
+    url: "https://github.com/settings/tokens",
+    placeholder: "ghp_...",
+  },
+  {
+    id: "sambanova",
+    name: "SambaNova Cloud",
+    desc: "High-speed free tier running Meta-Llama-3.3-70B-Instruct.",
+    freeTier: "Free key at cloud.sambanova.ai",
+    url: "https://cloud.sambanova.ai",
+    placeholder: "...",
+  },
   {
     id: "groq",
     name: "Groq",
-    desc: "Ultra-low latency inference (openai/gpt-oss-20b, compound-mini).",
+    desc: "Ultra-low latency inference (gpt-oss-20b, compound-mini).",
     freeTier: "Free tier at console.groq.com",
+    url: "https://console.groq.com",
     placeholder: "gsk_...",
   },
   {
     id: "gemini",
     name: "Google Gemini",
-    desc: "1M token context window and high throughput (gemini-3.6-flash).",
-    freeTier: "Free tier at aistudio.google.com",
+    desc: "1,500 free requests per day (gemini-2.5-flash, gemini-2.0-flash).",
+    freeTier: "Free API key at aistudio.google.com",
+    url: "https://aistudio.google.com",
     placeholder: "AIzaSy...",
   },
   {
@@ -38,6 +64,7 @@ const PROVIDERS: { id: ProviderType; name: string; desc: string; freeTier: strin
     name: "OpenRouter",
     desc: "Access to free open-weights models (google/gemma-4-31b-it:free).",
     freeTier: "Free tier at openrouter.ai",
+    url: "https://openrouter.ai",
     placeholder: "sk-or-...",
   },
   {
@@ -45,6 +72,7 @@ const PROVIDERS: { id: ProviderType; name: string; desc: string; freeTier: strin
     name: "OpenAI",
     desc: "Direct execution via gpt-4o-mini with standard developer account.",
     freeTier: "Developer key at platform.openai.com",
+    url: "https://platform.openai.com",
     placeholder: "sk-proj-...",
   },
 ];
@@ -267,9 +295,22 @@ export default function ApiKeyModal({ isOpen, onClose, onKeySaved }: ApiKeyModal
 
         {/* Add Provider Key Input */}
         <div className="space-y-2 mb-4">
-          <label className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-            Add {selectedProvider.toUpperCase()} API Key
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+              Add {selectedProvider.replace("_", " ").toUpperCase()} API Key
+            </label>
+            {PROVIDERS.find((p) => p.id === selectedProvider)?.url && (
+              <a
+                href={PROVIDERS.find((p) => p.id === selectedProvider)?.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-[10px] text-red-400 hover:text-red-300 underline underline-offset-2 transition-colors"
+              >
+                <span>GET FREE KEY HERE</span>
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input

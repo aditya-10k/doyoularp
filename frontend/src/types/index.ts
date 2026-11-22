@@ -6,6 +6,7 @@ export interface Evaluation {
   confidence: number;
   reasoning: string;
   evidence_ids: string[];
+  verified_by?: string | null;
 }
 
 export interface Claim {
@@ -15,6 +16,7 @@ export interface Claim {
   section?: string | null;
   source_text: string;
   page_number: number;
+  meta?: Record<string, any> | null;
   evaluation?: Evaluation | null;
 }
 
@@ -53,6 +55,7 @@ export interface ResultResponse {
   strongest_claim?: string | null;
   weakest_claim?: string | null;
   funny_mismatch?: string | null;
+  roast_archetype?: string | null;
   derogatory_versions?: string[] | null;
   claims_count: number;
   claims_breakdown: Claim[];

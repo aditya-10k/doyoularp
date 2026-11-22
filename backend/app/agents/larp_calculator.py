@@ -16,7 +16,7 @@ def calculate_larp_score(
     """
     if not evaluations:
         return {
-            "larp_score": 50.0,
+            "larp_score": 100.0 if not has_github else 50.0,
             "metrics": {
                 "total_claims": 0,
                 "supported": 0,

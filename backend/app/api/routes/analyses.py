@@ -281,6 +281,7 @@ async def get_analysis_claims(
                 verdict=c.evaluation.verdict,
                 confidence=c.evaluation.confidence,
                 reasoning=c.evaluation.reasoning,
+                verified_by=getattr(c.evaluation, "verified_by", None) or ("system_1_cross_encoder" if "System 1" in c.evaluation.reasoning else "system_2_deliberative"),
                 evidence_ids=[e.id for e in c.evaluation.evidence_records],
             )
 
@@ -391,6 +392,7 @@ async def get_analysis_result(
                 verdict=c.evaluation.verdict,
                 confidence=c.evaluation.confidence,
                 reasoning=c.evaluation.reasoning,
+                verified_by=getattr(c.evaluation, "verified_by", None) or ("system_1_cross_encoder" if "System 1" in c.evaluation.reasoning else "system_2_deliberative"),
                 evidence_ids=[e.id for e in c.evaluation.evidence_records],
             )
             if c.evaluation.verdict == "SUPPORTED" and not strongest_claim:
@@ -414,6 +416,7 @@ async def get_analysis_result(
     verdict_summary = entry.summary or "Evaluation complete."
     funny_mismatch = None
     derogatory_versions = None
+    roast_archetype = None
     if entry.summary and entry.summary.startswith("{"):
         try:
             parsed_sum = json.loads(entry.summary)
@@ -421,6 +424,7 @@ async def get_analysis_result(
                 verdict_summary = parsed_sum.get("verdict_summary") or verdict_summary
                 funny_mismatch = parsed_sum.get("funny_mismatch")
                 derogatory_versions = parsed_sum.get("derogatory_versions")
+                roast_archetype = parsed_sum.get("roast_archetype")
                 if parsed_sum.get("weakest_claim") and not weakest_claim:
                     weakest_claim = parsed_sum.get("weakest_claim")
         except Exception:
@@ -435,6 +439,7 @@ async def get_analysis_result(
         strongest_claim=strongest_claim,
         weakest_claim=weakest_claim,
         funny_mismatch=funny_mismatch,
+        roast_archetype=roast_archetype,
         derogatory_versions=derogatory_versions,
         claims_count=len(claims_breakdown),
         claims_breakdown=claims_breakdown,

@@ -13,7 +13,7 @@ class RetrievedEvidenceChunk:
         content: str,
         url: str,
         evidence_type: str,
-        meta: Dict[str, Any],
+        meta: Optional[Dict[str, Any]] = None,
     ):
         self.evidence_id = evidence_id
         self.score = score
@@ -21,7 +21,7 @@ class RetrievedEvidenceChunk:
         self.content = content
         self.url = url
         self.evidence_type = evidence_type
-        self.meta = meta
+        self.meta = meta or {}
 
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -215,6 +215,7 @@ class Evaluation(Base):
     verdict: Mapped[str] = mapped_column(String(50), nullable=False)  # SUPPORTED, PARTIALLY_SUPPORTED, UNVERIFIED, CONTRADICTED
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    verified_by: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     claim: Mapped["Claim"] = relationship("Claim", back_populates="evaluation")

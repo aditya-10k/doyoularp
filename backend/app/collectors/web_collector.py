@@ -12,10 +12,50 @@ class WebCollector:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
 
+    async def _fetch_via_jina(self, client: httpx.AsyncClient, safe_url: str) -> Optional[Dict[str, Any]]:
+        """
+        Uses Jina Reader API (https://r.jina.ai/<url>) to execute JS/SPAs (React, Next.js, Vue)
+        and extract clean Markdown text without running a local browser cluster.
+        """
+        jina_url = f"https://r.jina.ai/{safe_url}"
+        jina_headers = {
+            "User-Agent": "LARP-Checker-Web-Evidence/1.0",
+            "X-Target-Selector": "body",
+            "X-Timeout": "8",
+        }
+        if settings.JINA_API_KEY:
+            jina_headers["Authorization"] = f"Bearer {settings.JINA_API_KEY}"
+
+        try:
+            resp = await client.get(jina_url, headers=jina_headers, timeout=8.0)
+            if resp.status_code == 200 and len(resp.text.strip()) > 80:
+                raw_text = resp.text.strip()
+                title = "Webpage"
+                lines = raw_text.splitlines()
+                for line in lines[:8]:
+                    if line.startswith("Title:"):
+                        title = line.replace("Title:", "").strip()
+                        break
+
+                clean_text = " ".join(raw_text.split())[:10000]
+                return {
+                    "url": safe_url,
+                    "status": "collected",
+                    "title": title[:200] if title else "Webpage",
+                    "headings": [],
+                    "content": clean_text,
+                    "error": None,
+                    "engine": "jina_reader",
+                }
+        except Exception:
+            pass
+        return None
+
     async def fetch_page(self, url: str) -> Dict[str, Any]:
         """
         Fetches and extracts clean textual evidence from a public webpage.
         Applies SSRF validation before network call.
+        Attempts Jina Reader for JS/SPA execution, falling back to direct httpx + BeautifulSoup.
         """
         try:
             # 1. SSRF Safety Check
@@ -31,6 +71,12 @@ class WebCollector:
 
         try:
             async with httpx.AsyncClient(follow_redirects=True, max_redirects=3) as client:
+                # 2. Try Jina Reader first for rich JS/SPA hydration
+                jina_result = await self._fetch_via_jina(client, safe_url)
+                if jina_result:
+                    return jina_result
+
+                # 3. Fallback: Direct HTTP GET
                 resp = await client.get(
                     safe_url,
                     headers=self.headers,

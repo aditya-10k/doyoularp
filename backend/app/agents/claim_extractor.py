@@ -212,9 +212,12 @@ def strip_name_number_and_education(resume_text: str) -> str:
         if not line_final:
             continue
 
-        # Merge wrapped lines if line starts with lowercase or continuation punctuation
+        # Merge wrapped lines if line starts with lowercase or continuation punctuation (never merge project headers or links)
         if cleaned_lines and (line_final[0].islower() or line_final.startswith((',', '.', ';', ')', ']'))):
-            cleaned_lines[-1] = cleaned_lines[-1] + " " + line_final
+            if "|" not in line_final and "http" not in line_final and not line_final.startswith("•"):
+                cleaned_lines[-1] = cleaned_lines[-1] + " " + line_final
+            else:
+                cleaned_lines.append(line_final)
         else:
             cleaned_lines.append(line_final)
 
@@ -319,6 +322,10 @@ class ClaimExtractor:
                     "source_text": line_clean,
                 })
 
+        skill_claims = [c for c in claims if c.get("category") == "skill"]
+        project_claims = [c for c in claims if c.get("category") != "skill"]
+        if project_claims:
+            return skill_claims[:8] + project_claims[:17]
         return claims[:25]
 
     async def extract_claims(self, resume_text: str, discovered_urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -361,7 +368,14 @@ class ClaimExtractor:
                     )
                 ]
                 if filtered:
-                    return filtered[:25]
+                    skills_f = [c for c in filtered if c.get("category") == "skill"]
+                    projects_f = [c for c in filtered if c.get("category") != "skill"]
+                    if not projects_f:
+                        # LLM token budget truncated projects; augment with rule-based project claims
+                        rule_claims = self._rule_based_fallback(clean_text, discovered_urls)
+                        projects_f = [c for c in rule_claims if c.get("category") != "skill"]
+                    return skills_f[:8] + projects_f[:17]
+                return filtered[:25]
 
             return self._rule_based_fallback(clean_text, discovered_urls)
         except GroqRateLimitError:

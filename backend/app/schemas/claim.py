@@ -8,6 +8,7 @@ class EvaluationResponse(BaseModel):
     verdict: str  # SUPPORTED, PARTIALLY_SUPPORTED, UNVERIFIED, CONTRADICTED
     confidence: float
     reasoning: str
+    verified_by: Optional[str] = None
     evidence_ids: List[str] = []
 
 

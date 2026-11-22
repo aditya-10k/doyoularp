@@ -6,6 +6,7 @@ import { Claim, VerdictType } from "@/types";
 
 interface ClaimCardProps {
   claim: Claim;
+  forceExpanded?: boolean;
 }
 
 const VERDICT_CONFIG: Record<
@@ -48,11 +49,22 @@ const VERDICT_CONFIG: Record<
   },
 };
 
-export default function ClaimCard({ claim }: ClaimCardProps) {
+export default function ClaimCard({ claim, forceExpanded }: ClaimCardProps) {
   const [expanded, setExpanded] = useState(false);
+
+  React.useEffect(() => {
+    if (forceExpanded !== undefined) {
+      setExpanded(forceExpanded);
+    }
+  }, [forceExpanded]);
+
   const evaluation = claim.evaluation;
   const verdict: VerdictType = evaluation?.verdict || "UNVERIFIED";
   const config = VERDICT_CONFIG[verdict];
+  const meta = claim.meta || {};
+  const projectName = meta.project_name;
+  const attachedUrl = meta.attached_url;
+  const technologies: string[] = Array.isArray(meta.technologies) ? meta.technologies : [];
 
   return (
     <div className={`border transition-all ${config.border} bg-[#0d0d0f]/90`}>
@@ -75,6 +87,38 @@ export default function ClaimCard({ claim }: ClaimCardProps) {
               {claim.category}
             </span>
 
+            {/* Anchored Project Badge */}
+            {projectName && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-300 border border-zinc-700 bg-zinc-900/60 px-2 py-0.5">
+                {projectName}
+              </span>
+            )}
+
+            {/* Anchored URL Badge */}
+            {attachedUrl && (
+              <a
+                href={attachedUrl.startsWith("http") ? attachedUrl : `https://${attachedUrl}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-mono text-[10px] text-blue-400 border border-blue-900/60 bg-blue-950/30 px-2 py-0.5 hover:text-blue-300 transition-colors"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span>{attachedUrl.replace(/^https?:\/\//, "")}</span>
+                <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+              </a>
+            )}
+
+            {/* System 1 / System 2 Indicator */}
+            {evaluation?.verified_by === "system_1_cross_encoder" ? (
+              <span className="font-mono text-[9px] uppercase tracking-wider text-purple-400 border border-purple-800/80 bg-purple-950/40 px-2 py-0.5" title="Verified in ~10ms via local Cross-Encoder">
+                ⚡ SYSTEM 1 FAST REFLEX (0ms)
+              </span>
+            ) : (
+              <span className="font-mono text-[9px] uppercase tracking-wider text-cyan-400 border border-cyan-800/70 bg-cyan-950/30 px-2 py-0.5" title="Evaluated via multi-provider LLM cascade">
+                🧠 SYSTEM 2 DELIBERATIVE
+              </span>
+            )}
+
             {evaluation?.confidence && (
               <span className="font-mono text-[10px] text-zinc-500">
                 CONFIDENCE: {(evaluation.confidence * 100).toFixed(0)}%
@@ -86,6 +130,20 @@ export default function ClaimCard({ claim }: ClaimCardProps) {
           <h4 className="font-mono text-sm font-semibold text-zinc-100 leading-snug">
             {claim.claim_text}
           </h4>
+
+          {/* Technologies detected */}
+          {technologies.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {technologies.slice(0, 5).map((tech, idx) => (
+                <span
+                  key={idx}
+                  className="font-mono text-[9px] text-zinc-400 bg-zinc-900/80 border border-zinc-800 px-1.5 py-0.5"
+                >
+                  {tech}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Resume Source Quote */}
           <div className="border-l-2 border-zinc-800 pl-3 py-0.5">

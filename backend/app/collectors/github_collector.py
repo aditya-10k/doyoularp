@@ -156,9 +156,43 @@ def parse_spring_config(text: str) -> Dict[str, Any]:
     }
 
 
+TARGET_MANIFEST_NAMES = {
+    "pubspec.yaml",
+    "pom.xml",
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "pipfile",
+    "build.gradle",
+    "build.gradle.kts",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "go.mod",
+    "cargo.toml",
+    "application.properties",
+    "application.yml",
+    "next.config.js",
+    "next.config.mjs",
+}
+
+# Module-level repository evidence cache keyed by f"{owner}/{repo}:{pushed_at}"
+_REPO_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
 class GitHubCollector:
     def __init__(self, token: Optional[str] = None):
-        self.token = token or settings.GITHUB_TOKEN
+        # Support a pool of tokens for round-robin rotation
+        token_pool = []
+        if settings.GITHUB_TOKENS:
+            token_pool = [t.strip() for t in settings.GITHUB_TOKENS.split(",") if t.strip()]
+        if not token_pool:
+            single = token or settings.GITHUB_TOKEN
+            if single and single.strip():
+                token_pool = [single.strip()]
+
+        self.tokens: List[str] = token_pool
+        self._token_idx: int = 0
         self.base_url = "https://api.github.com"
         self.raw_url = "https://raw.githubusercontent.com"
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_GITHUB_REQS)
@@ -167,13 +201,21 @@ class GitHubCollector:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
 
+    def _get_active_token(self) -> Optional[str]:
+        if not self.tokens:
+            return None
+        tok = self.tokens[self._token_idx % len(self.tokens)]
+        self._token_idx += 1
+        return tok
+
     def _api_headers(self) -> Dict[str, str]:
         headers = {
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "LARP-Checker-Evidence-Collector",
         }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        tok = self._get_active_token()
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
         return headers
 
     async def _api_get(self, client: httpx.AsyncClient, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Any]:
@@ -244,15 +286,20 @@ class GitHubCollector:
             return []
 
     async def harvest_repo_manifests_and_readme(
-        self, client: httpx.AsyncClient, owner: str, repo: str
+        self, client: httpx.AsyncClient, owner: str, repo: str, default_branch: Optional[str] = None
     ) -> Tuple[Optional[str], Dict[str, Dict[str, Any]]]:
         """
-        Quickly harvests README and key dependency manifests in parallel via raw CDN requests.
+        Harvests README and key dependency manifests in parallel.
+        Uses recursive Git Trees API when available to discover manifests across any monorepo depth,
+        falling back to high-probability paths via CDN.
         """
         # 1. Detect branch with README (case-resilient)
-        branch = "main"
+        branch = default_branch or "main"
         readme_text = None
-        for test_branch in ["main", "master"]:
+        candidate_branches = ([default_branch] if default_branch else []) + ["main", "master", "dev", "trunk"]
+        for test_branch in candidate_branches:
+            if not test_branch:
+                continue
             for rname in ["README.md", "readme.md", "Readme.md"]:
                 try:
                     r_resp = await client.get(f"{self.raw_url}/{owner}/{repo}/{test_branch}/{rname}", timeout=2.0)
@@ -265,29 +312,45 @@ class GitHubCollector:
             if readme_text:
                 break
 
-        # 2. Key manifests & config files to check in parallel
-        manifest_files = [
-            "pubspec.yaml",
-            "pom.xml",
-            "package.json",
-            "requirements.txt",
-            "build.gradle",
-            "Dockerfile",
-            "docker-compose.yml",
-            "docker-compose.yaml",
-            "pyproject.toml",
-            "go.mod",
-            "Cargo.toml",
-            "next.config.js",
-            "next.config.mjs",
-            "backend/pom.xml",
-            "server/pom.xml",
-            "app/pubspec.yaml",
-            "client/package.json",
-            "src/main/resources/application.properties",
-            "src/main/resources/application.yml",
-            "android/app/build.gradle",
-        ]
+        # 2. Dynamic Monorepo Manifest Discovery via Git Trees API
+        manifest_files: List[str] = []
+        try:
+            tree_data = await self._api_get(client, f"/repos/{owner}/{repo}/git/trees/{branch}", {"recursive": "1"})
+            if tree_data and isinstance(tree_data, dict) and "tree" in tree_data:
+                for item in tree_data.get("tree", []):
+                    if item.get("type") == "blob":
+                        fpath = item.get("path", "")
+                        fname = fpath.split("/")[-1].lower()
+                        if fname in TARGET_MANIFEST_NAMES:
+                            manifest_files.append(fpath)
+                manifest_files = manifest_files[:25]
+        except Exception:
+            manifest_files = []
+
+        # Fallback to predefined manifest files if tree API failed or was rate limited
+        if not manifest_files:
+            manifest_files = [
+                "pubspec.yaml",
+                "pom.xml",
+                "package.json",
+                "requirements.txt",
+                "build.gradle",
+                "Dockerfile",
+                "docker-compose.yml",
+                "docker-compose.yaml",
+                "pyproject.toml",
+                "go.mod",
+                "Cargo.toml",
+                "next.config.js",
+                "next.config.mjs",
+                "backend/pom.xml",
+                "server/pom.xml",
+                "app/pubspec.yaml",
+                "client/package.json",
+                "src/main/resources/application.properties",
+                "src/main/resources/application.yml",
+                "android/app/build.gradle",
+            ]
 
         async def fetch_one(fpath: str):
             try:
@@ -304,7 +367,7 @@ class GitHubCollector:
         for res in results:
             if isinstance(res, tuple) and res[1]:
                 fpath, content = res
-                fname = fpath.split("/")[-1]
+                fname = fpath.split("/")[-1].lower()
                 parsed_meta: Dict[str, Any] = {}
                 if fname == "pubspec.yaml":
                     parsed_meta = parse_pubspec_yaml(content)
@@ -312,10 +375,10 @@ class GitHubCollector:
                     parsed_meta = parse_pom_xml(content)
                 elif fname == "package.json":
                     parsed_meta = parse_package_json(content)
-                elif fname in ("requirements.txt", "pyproject.toml"):
+                elif fname in ("requirements.txt", "pyproject.toml", "pipfile"):
                     deps = [line.strip().split("==")[0].split(">=")[0] for line in content.splitlines() if line.strip() and not line.startswith("#")]
                     parsed_meta = {"dependencies": deps, "summary": f"Python dependencies: {', '.join(deps[:25])}."}
-                elif fname == "Dockerfile":
+                elif fname == "dockerfile":
                     parsed_meta = parse_dockerfile(content)
                 elif fname in ("docker-compose.yml", "docker-compose.yaml"):
                     parsed_meta = parse_docker_compose(content)
@@ -345,6 +408,16 @@ class GitHubCollector:
             desc = repo_data.get("description") if repo_data else ""
             stars = repo_data.get("stargazers_count", 0) if repo_data else 0
             forks = repo_data.get("forks_count", 0) if repo_data else 0
+            pushed_at = repo_data.get("pushed_at", "") if repo_data else ""
+            default_branch = repo_data.get("default_branch") if repo_data else None
+
+            # Evidence cache check
+            cache_key = f"{owner.lower()}/{repo.lower()}:{pushed_at or 'none'}"
+            if cache_key in _REPO_CACHE:
+                cached = dict(_REPO_CACHE[cache_key])
+                if candidate_username:
+                    cached["candidate_commit_count"] = 10 if owner.lower() == candidate_username.lower() else cached.get("candidate_commit_count", 5)
+                return cached
 
             cand_commits = 5
             total_commits = 10
@@ -373,9 +446,11 @@ class GitHubCollector:
                         except Exception:
                             cand_commits = 5
 
-            readme, manifests = await self.harvest_repo_manifests_and_readme(client, owner, repo)
+            readme, manifests = await self.harvest_repo_manifests_and_readme(
+                client, owner, repo, default_branch=default_branch
+            )
 
-            return {
+            repo_record = {
                 "name": repo,
                 "owner": owner,
                 "url": f"https://github.com/{owner}/{repo}",
@@ -389,7 +464,37 @@ class GitHubCollector:
                 "sample_commits": [],
                 "readme": readme,
                 "manifests": manifests,
+                "pushed_at": pushed_at,
             }
+            if pushed_at:
+                _REPO_CACHE[cache_key] = repo_record
+            return repo_record
+
+    async def search_user_project(
+        self, username: str, project_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Autonomously searches candidate's GitHub for repositories matching project_name
+        when no direct URL was attached in the resume.
+        """
+        if not username or not project_name:
+            return None
+
+        clean_name = re.sub(r'[^a-zA-Z0-9_\-]', ' ', project_name).strip()
+        if not clean_name or len(clean_name) < 2:
+            return None
+
+        async with httpx.AsyncClient(timeout=settings.REQUEST_TIMEOUT_SECONDS) as client:
+            res = await self._api_get(
+                client, "/search/repositories", {"q": f"{clean_name} user:{username}", "per_page": 3}
+            )
+            if res and isinstance(res, dict) and res.get("items"):
+                top_match = res["items"][0]
+                owner = top_match.get("owner", {}).get("login", username)
+                repo_name = top_match.get("name")
+                return await self.collect_single_repo(owner, repo_name, candidate_username=username)
+
+        return None
 
     async def collect_candidate_github(self, username: str) -> Dict[str, Any]:
         """
@@ -425,8 +530,16 @@ class GitHubCollector:
             async def process_repo(r: Dict[str, Any]) -> Dict[str, Any]:
                 repo_name = r.get("name")
                 owner = r.get("owner", {}).get("login", username) if isinstance(r.get("owner"), dict) else (r.get("owner") or username)
-                readme, manifests = await self.harvest_repo_manifests_and_readme(client, owner, repo_name)
-                return {
+                pushed_at = r.get("pushed_at", "")
+                cache_key = f"{owner.lower()}/{repo_name.lower()}:{pushed_at or 'none'}"
+                if cache_key in _REPO_CACHE:
+                    return _REPO_CACHE[cache_key]
+
+                default_branch = r.get("default_branch")
+                readme, manifests = await self.harvest_repo_manifests_and_readme(
+                    client, owner, repo_name, default_branch=default_branch
+                )
+                res_obj = {
                     "name": repo_name,
                     "owner": owner,
                     "url": r.get("html_url") or f"https://github.com/{owner}/{repo_name}",
@@ -440,7 +553,11 @@ class GitHubCollector:
                     "sample_commits": [],
                     "readme": readme,
                     "manifests": manifests,
+                    "pushed_at": pushed_at,
                 }
+                if pushed_at:
+                    _REPO_CACHE[cache_key] = res_obj
+                return res_obj
 
             repo_records = await asyncio.gather(*(process_repo(r) for r in repos_raw[:15]))
 

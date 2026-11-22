@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 from backend.app.agents.groq_client import GroqClient, GroqRateLimitError
+from backend.app.agents.system1_verifier import System1Verifier
 from backend.app.rag.evidence_retriever import RetrievedEvidenceChunk
 
 logger = logging.getLogger(__name__)
@@ -326,9 +327,96 @@ def check_bullshit_project_contradiction(
     return None
 
 
+def check_competitive_programming_claim(
+    claim_text: str,
+    retrieved_chunks: List[Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Deterministically evaluates claims regarding LeetCode and Codeforces against verified profile chunks.
+    """
+    lower = claim_text.lower()
+    if not ("leetcode" in lower or "codeforces" in lower):
+        return None
+
+    # Check for LeetCode profile chunks
+    lc_chunk = next(
+        (c for c in retrieved_chunks if getattr(c, "evidence_type", "") == "leetcode_profile" or "leetcode" in getattr(c, "title", "").lower()),
+        None
+    )
+    if lc_chunk and "leetcode" in lower:
+        meta = getattr(lc_chunk, "meta", {}) or {}
+        total_solved = meta.get("total_solved")
+        ev_id = getattr(lc_chunk, "evidence_id", "lc_ev_1")
+
+        # Check for claimed problem count (e.g., "500+ problems", "600+ leetcode problems", "solved 400 questions")
+        count_match = re.search(r'(\d+)\+?(?:\s+(?:leetcode|codeforces|algo|dsa))?\s*(?:problems?|questions?|dsa|challenges?|solved)', lower)
+        if count_match and total_solved is not None:
+            claimed_count = int(count_match.group(1))
+            if claimed_count > 50 and total_solved < claimed_count * 0.4:
+                return {
+                    "verdict": "CONTRADICTED",
+                    "confidence": 0.95,
+                    "reasoning": (
+                        f"LeetCode contradiction: claimed {claimed_count}+ problems solved, "
+                        f"but verified public profile shows only {total_solved} total problems solved."
+                    ),
+                    "evidence_ids": [ev_id],
+                }
+            elif total_solved >= claimed_count * 0.9:
+                return {
+                    "verdict": "SUPPORTED",
+                    "confidence": 0.95,
+                    "reasoning": (
+                        f"LeetCode claim verified: public profile confirms {total_solved} problems solved "
+                        f"(substantiating {claimed_count}+ claim)."
+                    ),
+                    "evidence_ids": [ev_id],
+                }
+
+    # Check for Codeforces profile chunks
+    cf_chunk = next(
+        (c for c in retrieved_chunks if getattr(c, "evidence_type", "") == "codeforces_profile" or "codeforces" in getattr(c, "title", "").lower()),
+        None
+    )
+    if cf_chunk and "codeforces" in lower:
+        meta = getattr(cf_chunk, "meta", {}) or {}
+        peak_rating = meta.get("peak_rating", 0)
+        max_rank = meta.get("max_rank", "unrated")
+        ev_id = getattr(cf_chunk, "evidence_id", "cf_ev_1")
+
+        for r_name in ["grandmaster", "master", "candidate master", "expert"]:
+            if r_name in lower and peak_rating > 0:
+                if peak_rating < 1600 and r_name in ("expert", "candidate master", "master", "grandmaster"):
+                    return {
+                        "verdict": "CONTRADICTED",
+                        "confidence": 0.95,
+                        "reasoning": (
+                            f"Codeforces contradiction: claimed {r_name.title()}, "
+                            f"but verified public profile has a peak rating of only {peak_rating} ({max_rank})."
+                        ),
+                        "evidence_ids": [ev_id],
+                    }
+                elif (r_name == "expert" and peak_rating >= 1600) or (r_name == "candidate master" and peak_rating >= 1900):
+                    return {
+                        "verdict": "SUPPORTED",
+                        "confidence": 0.95,
+                        "reasoning": (
+                            f"Codeforces claim verified: public profile confirms peak rating of {peak_rating} ({max_rank})."
+                        ),
+                        "evidence_ids": [ev_id],
+                    }
+
+    return None
+
+
 class EvaluationAgent:
-    def __init__(self, groq_client: Optional[GroqClient] = None):
+    def __init__(
+        self,
+        groq_client: Optional[GroqClient] = None,
+        system1_verifier: Optional[System1Verifier] = None,
+    ):
         self.groq = groq_client or GroqClient()
+        self.system1 = system1_verifier or System1Verifier()
 
     def _rule_based_fallback(
         self,
@@ -348,6 +436,11 @@ class EvaluationAgent:
         )
         if bullshit_check:
             return bullshit_check
+
+        # Check for competitive programming profile contradiction
+        comp_check = check_competitive_programming_claim(claim_text, retrieved_chunks)
+        if comp_check:
+            return comp_check
 
         if not retrieved_chunks:
             return {
@@ -634,6 +727,12 @@ class EvaluationAgent:
         if bullshit_check:
             return bullshit_check
 
+        # Fast path: System 1 NLI Cross-Encoder (~10ms CPU inference)
+        if self.system1 and self.system1.is_available:
+            s1_verdict = self.system1.triage_claim(claim_text, retrieved_chunks, claim_meta=claim_meta)
+            if s1_verdict:
+                return s1_verdict
+
         if not self.groq.is_configured:
             return self._rule_based_fallback(
                 claim_text, retrieved_chunks, category=category, section=section, claim_meta=claim_meta
@@ -759,10 +858,15 @@ class EvaluationAgent:
             )
             results.append((claim, eval_res))
 
-        # 2. Fast path: evaluate bullshit/overplayed projects deterministically in 0ms (0 API calls)
+        # 2. Fast path: evaluate competitive programming and bullshit/overplayed projects deterministically in 0ms (0 API calls)
         remaining_projects = []
         for claim, chunks in projects:
             claim_meta = getattr(claim, "meta", {}) or {}
+            comp_check = check_competitive_programming_claim(claim.claim_text, chunks)
+            if comp_check:
+                results.append((claim, comp_check))
+                continue
+
             bullshit_check = check_bullshit_project_contradiction(
                 claim_text=claim.claim_text,
                 retrieved_chunks=chunks,
@@ -774,6 +878,18 @@ class EvaluationAgent:
             else:
                 remaining_projects.append((claim, chunks))
         projects = remaining_projects
+
+        # 2b. Fast path: System 1 NLI Cross-Encoder (~10ms CPU inference)
+        if self.system1 and self.system1.is_available and projects:
+            s1_unresolved = []
+            for claim, chunks in projects:
+                claim_meta = getattr(claim, "meta", {}) or {}
+                s1_res = self.system1.triage_claim(claim.claim_text, chunks, claim_meta=claim_meta)
+                if s1_res:
+                    results.append((claim, s1_res))
+                else:
+                    s1_unresolved.append((claim, chunks))
+            projects = s1_unresolved
 
         # 3. If no project/experience claims remain, return immediately
         if not projects:
@@ -793,8 +909,8 @@ class EvaluationAgent:
                 results.append((claim, eval_res))
             return results
 
-        # 5. Batch claims: evaluate remaining project claims in consolidated high-density batches (up to 15 claims per batch)
-        batch_size = 15
+        # 5. Batch claims: evaluate remaining project claims in compact mini-batches (4 claims per batch to stay under TPM limits)
+        batch_size = 4
         mini_batches = [projects[i:i + batch_size] for i in range(0, len(projects), batch_size)]
         evals_map: Dict[str, Any] = {}
 
@@ -836,9 +952,7 @@ class EvaluationAgent:
                 for item in data.get("evaluations", []):
                     c_id = str(item.get("claim_id", ""))
                     evals_map[c_id] = item
-            except GroqRateLimitError:
-                raise
-            except Exception as e:
+            except (GroqRateLimitError, Exception) as e:
                 logger.warning(f"Mini-batch evaluation fallback for batch {batch_offset}: {e}")
 
         # Run batches sequentially to maximize token capacity and prevent concurrent TPM/RPM spikes
@@ -900,6 +1014,7 @@ class EvaluationAgent:
                     "confidence": conf,
                     "reasoning": reasoning,
                     "evidence_ids": evidence_ids,
+                    "verified_by": "system_2_llm",
                 }))
             else:
                 results.append((

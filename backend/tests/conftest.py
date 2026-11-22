@@ -15,18 +15,24 @@ def disable_live_ai_for_tests():
     from backend.app.core.config import settings
     keys = [
         "GROQ_API_KEY",
+        "CEREBRAS_API_KEY",
+        "GITHUB_MODELS_TOKEN",
+        "GITHUB_TOKEN",
+        "SAMBANOVA_API_KEY",
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",
         "OPENAI_API_KEY",
         "MISTRAL_API_KEY",
         "ANTHROPIC_API_KEY",
     ]
-    original = {k: getattr(settings, k) for k in keys}
+    original = {k: getattr(settings, k, "") for k in keys}
     for k in keys:
-        setattr(settings, k, "")
+        if hasattr(settings, k):
+            setattr(settings, k, "")
     yield
     for k, v in original.items():
-        setattr(settings, k, v)
+        if hasattr(settings, k):
+            setattr(settings, k, v)
 
 
 @pytest.fixture(autouse=True)

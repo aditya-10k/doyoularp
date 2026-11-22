@@ -4,9 +4,13 @@ from typing import Any, Dict, List, Optional, Set
 import pypdf
 from backend.app.parsers.url_extractor import (
     classify_url,
+    extract_profile_handles_from_text,
     extract_urls_from_text,
     normalize_url,
+    parse_codeforces_url,
     parse_github_url,
+    parse_leetcode_url,
+    parse_linkedin_url,
 )
 
 
@@ -63,12 +67,18 @@ def parse_pdf_bytes(pdf_bytes: bytes) -> ParsedPDFResult:
             if url not in discovered_urls:
                 category = classify_url(url)
                 gh_info = parse_github_url(url)
+                lc_info = parse_leetcode_url(url)
+                cf_info = parse_codeforces_url(url)
+                li_info = parse_linkedin_url(url)
                 discovered_urls[url] = {
                     "url": url,
                     "source": "text_layer",
                     "page_number": page_idx,
                     "category": category,
                     "github_info": gh_info,
+                    "leetcode_info": lc_info,
+                    "codeforces_info": cf_info,
+                    "linkedin_info": li_info,
                 }
 
         # 3. Extract embedded PDF hyperlink annotations
@@ -89,6 +99,9 @@ def parse_pdf_bytes(pdf_bytes: bytes) -> ParsedPDFResult:
                                 if norm_uri:
                                     category = classify_url(norm_uri)
                                     gh_info = parse_github_url(norm_uri)
+                                    lc_info = parse_leetcode_url(norm_uri)
+                                    cf_info = parse_codeforces_url(norm_uri)
+                                    li_info = parse_linkedin_url(norm_uri)
                                     # Annotations take precedence or augment text discoveries
                                     discovered_urls[norm_uri] = {
                                         "url": norm_uri,
@@ -96,6 +109,9 @@ def parse_pdf_bytes(pdf_bytes: bytes) -> ParsedPDFResult:
                                         "page_number": page_idx,
                                         "category": category,
                                         "github_info": gh_info,
+                                        "leetcode_info": lc_info,
+                                        "codeforces_info": cf_info,
+                                        "linkedin_info": li_info,
                                     }
             except Exception:
                 # Malformed annotations shouldn't crash the entire PDF extraction
@@ -103,6 +119,22 @@ def parse_pdf_bytes(pdf_bytes: bytes) -> ParsedPDFResult:
 
     full_text = "\n\n".join(full_text_list)
     candidate_info = extract_candidate_fields(full_text)
+
+    # 4. Extract profile handles from text that weren't full URLs
+    handle_matches = extract_profile_handles_from_text(full_text)
+    for h_item in handle_matches:
+        h_url = h_item["url"]
+        if h_url not in discovered_urls:
+            discovered_urls[h_url] = {
+                "url": h_url,
+                "source": h_item.get("source", "text_handle_match"),
+                "page_number": 1,
+                "category": h_item["category"],
+                "github_info": None,
+                "leetcode_info": h_item.get("leetcode_info"),
+                "codeforces_info": h_item.get("codeforces_info"),
+                "linkedin_info": None,
+            }
 
     return ParsedPDFResult(
         raw_text=full_text,

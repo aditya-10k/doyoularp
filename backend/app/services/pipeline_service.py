@@ -14,7 +14,9 @@ from backend.app.agents.evaluation_agent import EvaluationAgent
 from backend.app.agents.groq_client import GroqClient, GroqRateLimitError
 from backend.app.agents.larp_calculator import calculate_larp_score
 from backend.app.agents.roast_agent import RoastAgent
+from backend.app.collectors.competitive_collector import CompetitiveCollector
 from backend.app.collectors.github_collector import GitHubCollector
+from backend.app.collectors.linkedin_collector import LinkedInCollector
 from backend.app.collectors.web_collector import WebCollector
 from backend.app.core.config import settings
 from backend.app.utils.sanitizer import sanitize_null_bytes
@@ -55,53 +57,6 @@ ANONYMOUS_ALIASES = [
     "GraphQL Prophet",
 ]
 
-DEROGATORY_VERSIONS_LIST = [
-    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.",
-    "Submitting a software resume without GitHub is like applying to be an airline pilot by showing a picture of a bird.",
-    "You spent more time selecting fonts on this PDF than writing actual code. Cancel the interviews and go become an influencer.",
-    "If your code is operating in stealth mode, your job search should be operating in stealth mode as well.",
-    "What was the master strategy? Hope the interviewer doesn't know what a version control system is?",
-]
-
-DEROGATORY_NO_GITHUB_ROASTS = [
-    (
-        "No GitHub link found anywhere in this resume. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
-        "You had the audacity to submit a technical engineering resume loaded with project claims, architectural buzzwords, and claimed proficiencies, yet you could not produce a single public GitHub link, repository, or commit receipt. "
-        "In an industry where the only real proof of competence is running code, you decided that your word alone was worth six figures.\n\n"
-        "There are no commit timestamps. There are no pull requests. There are no Docker containers. There is only a PDF document constructed from pure LinkedIn fiction and wishful thinking. "
-        "If you want to be taken seriously as an engineer, publish your code. Until then, you are simply roleplaying in a developer costume."
-    ),
-    (
-        "No GitHub link found in this resume. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
-        "Submitting a software engineering resume without a GitHub profile is the technical equivalent of applying to be an airline pilot by showing a picture of a bird. "
-        "You expect hiring managers to take your claims of 'spearheading distributed architectures' and 'optimizing mission-critical databases' on blind faith while you hide in the witness protection program of software development.\n\n"
-        "Zero repositories. Zero commit history. Zero public code provenance. You brought a beautifully typeset piece of fiction to a technical audit. "
-        "Either publish the receipts or pivot to lifestyle content creation full-time."
-    ),
-    (
-        "No GitHub link found. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
-        "You spent more time selecting fonts, aligning margins, and agonizing over bullet point spacing on this PDF than you have ever spent writing production code. "
-        "You claim proficiency in entire technology stacks, yet you couldn't even manage to paste a single GitHub URL onto the page. "
-        "What was the master strategy here? Hope the interviewer doesn't know what a version control system is?\n\n"
-        "In a field defined strictly by what you build and ship, you brought pure vaporware. "
-        "Cancel the upcoming interviews, close your code editor, and re-evaluate your life choices."
-    ),
-    (
-        "No GitHub link found. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
-        "You threw around terms like 'scalable microservices', 'event-driven pipelines', and 'full-stack engineering', yet you failed to provide even the most elementary proof of existence. "
-        "A developer without a GitHub presence in 2026 is indistinguishable from an AI chatbot hallucinating a career into a resume generator.\n\n"
-        "You have zero public code, zero receipts, and zero grounds to claim software competence. "
-        "If your code is operating in stealth mode, your job search should be operating in stealth mode as well."
-    ),
-    (
-        "No GitHub link found anywhere on this document. Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you.\n\n"
-        "Did you genuinely believe that reciting three years of tech Twitter buzzwords on a PDF would substitute for actual public repositories? "
-        "You are asking someone to hire an engineer who apparently writes code exclusively on confidential napkins or in alternate dimensions.\n\n"
-        "There is nothing to audit because there is nothing here. No code, no commits, no proof. "
-        "Take this resume, throw it in the recycling bin, and go learn git."
-    ),
-]
-
 
 class PipelineService:
     def __init__(
@@ -117,6 +72,8 @@ class PipelineService:
         self.roast_agent = RoastAgent()
         self.github_collector = GitHubCollector()
         self.web_collector = WebCollector()
+        self.competitive_collector = CompetitiveCollector()
+        self.linkedin_collector = LinkedInCollector()
 
     def generate_alias(self, custom_alias: Optional[str] = None) -> str:
         if custom_alias and custom_alias.strip():
@@ -211,7 +168,7 @@ class PipelineService:
                 discovered_sources.append(src)
             await db.flush()
 
-            # Fast abort if no GitHub link is found: do not go through the entire pipeline
+            # Check if GitHub link is present
             has_github = (
                 any(s.type == "github" for s in discovered_sources)
                 or ("github.com" in (parsed_pdf.raw_text or "").lower())
@@ -220,73 +177,8 @@ class PipelineService:
             if not has_github:
                 logger.info(
                     f"Analysis {analysis.id}: No GitHub link discovered in resume. "
-                    "Aborting pipeline immediately with maximum LARP verdict."
+                    "Proceeding with multi-source evidence extraction and claim evaluation."
                 )
-
-                selected_roast = random.choice(DEROGATORY_NO_GITHUB_ROASTS)
-                verdict_summary = (
-                    "FATAL PHANTOM DETECTED: Zero GitHub link or code provenance found in resume. "
-                    "Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you. 100% unverified buzzword fiction."
-                )
-                funny_mismatch = "No GitHub link found: Go and make TikToks, pray you get diversity hired, or just hope your interviewer is as dumb as you."
-                weakest_claim = "Zero GitHub profile or repository links provided in resume"
-
-                # Add an explicit contradicted claim so the evidence inspection UI details the violation
-                claim_obj = Claim(
-                    analysis_id=analysis.id,
-                    resume_id=resume.id,
-                    claim_text="Verifiable public GitHub repository code provenance",
-                    category="provenance",
-                    section="links",
-                    source_text="Candidate provided zero GitHub profile or repository URLs across the entire resume.",
-                    meta={"technologies": [], "project_name": "GitHub Provenance"},
-                )
-                db.add(claim_obj)
-                await db.flush()
-
-                eval_record = Evaluation(
-                    claim_id=claim_obj.id,
-                    verdict="CONTRADICTED",
-                    confidence=1.0,
-                    reasoning="Technical engineering resume submitted without linking a GitHub profile or public code repositories. Provenance completely contradicted.",
-                )
-                db.add(eval_record)
-
-                candidate = await db.get(Candidate, analysis.candidate_id)
-                alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
-
-                summary_payload = json.dumps({
-                    "verdict_summary": verdict_summary,
-                    "funny_mismatch": funny_mismatch,
-                    "weakest_claim": weakest_claim,
-                    "derogatory_versions": DEROGATORY_VERSIONS_LIST,
-                })
-
-                stmt_existing = select(LeaderboardEntry).where(LeaderboardEntry.analysis_id == analysis.id)
-                existing_res = await db.execute(stmt_existing)
-                existing_entry = existing_res.scalar_one_or_none()
-
-                if existing_entry:
-                    existing_entry.larp_score = 100.0
-                    existing_entry.roast = selected_roast
-                    existing_entry.summary = summary_payload
-                else:
-                    leaderboard_entry = LeaderboardEntry(
-                        analysis_id=analysis.id,
-                        anonymous_alias=alias_name,
-                        larp_score=100.0,
-                        roast=selected_roast,
-                        summary=summary_payload,
-                        token=str(uuid.uuid4()).replace("-", ""),
-                    )
-                    db.add(leaderboard_entry)
-
-                analysis.status = "completed"
-                analysis.stage = "completed"
-                analysis.progress = 100
-                analysis.completed_at = datetime.now(timezone.utc)
-                await db.commit()
-                return
 
             # 3. Extracting Resume Claims
             analysis.stage = "extracting_claims"
@@ -380,6 +272,23 @@ class PipelineService:
                                     if r_key not in collected_repo_keys:
                                         collected_repo_keys.add(r_key)
                                         collected_repos_data.append(r)
+
+            # Autonomous Project Search: Discover candidate repositories matching project names without direct URLs
+            if candidate_gh_user:
+                for c_rec in claim_records:
+                    meta_dict = c_rec.meta if isinstance(c_rec.meta, dict) else {}
+                    p_name = meta_dict.get("project_name")
+                    p_url = meta_dict.get("attached_url")
+                    if p_name and not p_url:
+                        clean_p = p_name.lower().strip()
+                        already_found = any(clean_p in k for k in collected_repo_keys)
+                        if not already_found:
+                            searched_repo = await self.github_collector.search_user_project(candidate_gh_user, p_name)
+                            if searched_repo:
+                                r_key = f"{(searched_repo.get('owner') or candidate_gh_user).lower()}/{(searched_repo.get('name') or '').lower()}"
+                                if r_key not in collected_repo_keys:
+                                    collected_repo_keys.add(r_key)
+                                    collected_repos_data.append(searched_repo)
 
             # Persist collected repositories and evidence records
             for r in collected_repos_data:
@@ -592,6 +501,92 @@ class PipelineService:
 
             await db.flush()
 
+            # 5b. Collecting Competitive Programming & Professional Platform Evidence
+            comp_sources = [
+                s for s in discovered_sources
+                if s.type in ("leetcode", "codeforces", "linkedin")
+            ]
+            for src in comp_sources:
+                src_meta = src.meta if isinstance(src.meta, dict) else {}
+                if src.type == "leetcode":
+                    lc_info = src_meta.get("leetcode_info") or {}
+                    username = lc_info.get("username")
+                    if not username and src.url:
+                        from backend.app.parsers.url_extractor import parse_leetcode_url
+                        parsed_lc = parse_leetcode_url(src.url)
+                        if parsed_lc:
+                            username = parsed_lc.get("username")
+                    if username:
+                        lc_data = await self.competitive_collector.fetch_leetcode_evidence(username)
+                        if lc_data and lc_data.get("status") == "collected":
+                            src.status = "collected"
+                            lc_ev = Evidence(
+                                analysis_id=analysis.id,
+                                candidate_id=analysis.candidate_id,
+                                source_id=src.id,
+                                evidence_type="leetcode_profile",
+                                title=sanitize_null_bytes(f"LeetCode Profile ({username})"),
+                                content=sanitize_null_bytes(lc_data.get("summary", "")),
+                                url=sanitize_null_bytes(lc_data.get("url") or src.url),
+                                meta=sanitize_null_bytes(lc_data),
+                            )
+                            db.add(lc_ev)
+                        else:
+                            src.status = lc_data.get("status", "failed") if isinstance(lc_data, dict) else "failed"
+
+                elif src.type == "codeforces":
+                    cf_info = src_meta.get("codeforces_info") or {}
+                    handle = cf_info.get("handle")
+                    if not handle and src.url:
+                        from backend.app.parsers.url_extractor import parse_codeforces_url
+                        parsed_cf = parse_codeforces_url(src.url)
+                        if parsed_cf:
+                            handle = parsed_cf.get("handle")
+                    if handle:
+                        cf_data = await self.competitive_collector.fetch_codeforces_evidence(handle)
+                        if cf_data and cf_data.get("status") == "collected":
+                            src.status = "collected"
+                            cf_ev = Evidence(
+                                analysis_id=analysis.id,
+                                candidate_id=analysis.candidate_id,
+                                source_id=src.id,
+                                evidence_type="codeforces_profile",
+                                title=sanitize_null_bytes(f"Codeforces Profile ({handle})"),
+                                content=sanitize_null_bytes(cf_data.get("summary", "")),
+                                url=sanitize_null_bytes(cf_data.get("url") or src.url),
+                                meta=sanitize_null_bytes(cf_data),
+                            )
+                            db.add(cf_ev)
+                        else:
+                            src.status = cf_data.get("status", "failed") if isinstance(cf_data, dict) else "failed"
+
+                elif src.type == "linkedin":
+                    li_info = src_meta.get("linkedin_info") or {}
+                    handle = li_info.get("handle")
+                    if not handle and src.url:
+                        from backend.app.parsers.url_extractor import parse_linkedin_url
+                        parsed_li = parse_linkedin_url(src.url)
+                        if parsed_li:
+                            handle = parsed_li.get("handle")
+                    if handle:
+                        cand_name = parsed_pdf.candidate_info.get("name") if hasattr(parsed_pdf, "candidate_info") and isinstance(parsed_pdf.candidate_info, dict) else None
+                        li_data = await self.linkedin_collector.verify_linkedin_profile(handle, candidate_name=cand_name)
+                        if li_data and li_data.get("status") in ("collected", "unverified_no_serp_key"):
+                            src.status = "collected" if li_data.get("status") == "collected" else "pending"
+                            li_ev = Evidence(
+                                analysis_id=analysis.id,
+                                candidate_id=analysis.candidate_id,
+                                source_id=src.id,
+                                evidence_type="linkedin_profile",
+                                title=sanitize_null_bytes(f"LinkedIn Profile ({handle})"),
+                                content=sanitize_null_bytes(li_data.get("summary", "")),
+                                url=sanitize_null_bytes(li_data.get("url") or src.url),
+                                meta=sanitize_null_bytes(li_data),
+                            )
+                            db.add(li_ev)
+
+            await db.flush()
+
             # 6. Normalizing Evidence & RAG Indexing
             analysis.stage = "normalizing_evidence"
             analysis.progress = 75
@@ -669,6 +664,7 @@ class PipelineService:
                     verdict=eval_data.get("verdict", "UNVERIFIED"),
                     confidence=eval_data.get("confidence", 0.5),
                     reasoning=sanitize_null_bytes(eval_data.get("reasoning", "")),
+                    verified_by=eval_data.get("verified_by") or ("system_1_cross_encoder" if "System 1" in eval_data.get("reasoning", "") else "system_2_deliberative"),
                 )
                 db.add(eval_record)
                 await db.flush()
@@ -687,8 +683,11 @@ class PipelineService:
 
                 eval_results_for_scoring.append({
                     "claim_text": claim.claim_text,
+                    "source_text": claim.source_text,
+                    "category": claim.category,
                     "verdict": eval_data.get("verdict"),
                     "reasoning": eval_data.get("reasoning"),
+                    "confidence": eval_data.get("confidence", 0.5),
                 })
 
             await db.flush()
@@ -707,21 +706,44 @@ class PipelineService:
             )
             larp_score = score_data["larp_score"]
 
+            candidate = await db.get(Candidate, analysis.candidate_id)
+            alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
+
+            # Ammunition extraction: competitive programming stats
+            competitive_stats: Dict[str, Any] = {}
+            for ev in all_evidence:
+                if ev.evidence_type in ("competitive_programming_leetcode", "competitive_programming_codeforces"):
+                    p_name = "leetcode" if "leetcode" in ev.evidence_type else "codeforces"
+                    competitive_stats[p_name] = ev.meta or {"summary": ev.content}
+
+            # Ammunition extraction: suspicious or toy dependencies
+            suspicious_deps: List[str] = []
+            for ev in all_evidence:
+                if ev.evidence_type in ("github_manifest", "github_tech_stack") and ev.meta:
+                    packages = ev.meta.get("packages_sample") or ev.meta.get("parsed", {}).get("dependencies", [])
+                    if isinstance(packages, dict):
+                        packages = list(packages.keys())
+                    if isinstance(packages, list):
+                        for pkg in packages[:30]:
+                            if any(toy in pkg.lower() for toy in ["create-react-app", "react-scripts", "is-odd", "is-even", "left-pad", "fake", "mock", "test-app"]):
+                                suspicious_deps.append(pkg)
+
             roast_data = await roast_agent.generate_roast(
                 larp_score=larp_score,
                 evaluations=eval_results_for_scoring,
                 repos=collected_repos_data,
                 intensity=settings.ROAST_INTENSITY,
                 has_github=has_github_source,
+                candidate_alias=alias_name,
+                competitive_stats=competitive_stats if competitive_stats else None,
+                suspicious_dependencies=suspicious_deps if suspicious_deps else None,
             )
-
-            candidate = await db.get(Candidate, analysis.candidate_id)
-            alias_name = candidate.anonymous_alias if candidate else "Anonymous Candidate"
 
             summary_payload = json.dumps({
                 "verdict_summary": sanitize_null_bytes(roast_data.get("verdict_summary")),
                 "funny_mismatch": sanitize_null_bytes(roast_data.get("funny_mismatch")),
                 "weakest_claim": sanitize_null_bytes(roast_data.get("weakest_claim")),
+                "roast_archetype": sanitize_null_bytes(roast_data.get("roast_archetype")),
             })
 
             # Check if leaderboard entry already exists

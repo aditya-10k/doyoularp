@@ -9,17 +9,18 @@ from backend.app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class GroqRateLimitError(Exception):
-    """Raised when Groq API rate limits (HTTP 429, TPM, TPD) are reached."""
+    """Raised when all configured AI providers rate limit or fail."""
     pass
 
 
-# Global circuit breaker timestamp: if rate limited, don't hammer Groq
+# Global circuit breaker timestamp: if rate limited, don't hammer providers
 _RATE_LIMITED_UNTIL = 0.0
 
 
 class GroqClient:
-    """Wrapper for Groq API with structured JSON output, circuit-breaker, and fallback support."""
+    """Wrapper for multi-provider AI completions with structured JSON output, circuit-breaker, and cascading failover."""
 
     def __init__(
         self,
@@ -60,8 +61,12 @@ class GroqClient:
         return bool(
             len(self.user_keys) > 0
             or self.api_key
-            or settings.OPENROUTER_API_KEY
+            or settings.CEREBRAS_API_KEY
+            or settings.GITHUB_MODELS_TOKEN
+            or settings.GITHUB_TOKEN
+            or settings.SAMBANOVA_API_KEY
             or settings.GEMINI_API_KEY
+            or settings.OPENROUTER_API_KEY
             or settings.OPENAI_API_KEY
             or settings.MISTRAL_API_KEY
             or settings.ANTHROPIC_API_KEY
@@ -74,16 +79,21 @@ class GroqClient:
         temperature: float = 0.2,
         json_mode: bool = False,
         max_tokens: Optional[int] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> str:
         """
         Sends completion request across configured AI providers in resilient cascade:
         0. User-supplied priority keys (in order of priority across providers)
-        1. Groq (with active model fleet & safe OTPM token limits)
-        2. OpenRouter (free tier / configured models)
-        3. Google Gemini
-        4. OpenAI
-        5. Mistral
-        6. Anthropic
+        1. Groq (Llama / OSS fleet)
+        2. Cerebras Cloud (ultra-fast free tier Llama 3.3 70B)
+        3. GitHub Models (free GPT-4o-mini / Llama via GITHUB_TOKEN)
+        4. SambaNova Cloud (free Llama 3.3 70B)
+        5. Google Gemini (Gemini 2.5/2.0 Flash)
+        6. OpenRouter (free tier / configured models)
+        7. OpenAI
+        8. Mistral
+        9. Anthropic
         """
         global _RATE_LIMITED_UNTIL
         if time.time() < _RATE_LIMITED_UNTIL:
@@ -94,7 +104,8 @@ class GroqClient:
         if not self.is_configured:
             raise RuntimeError(
                 "No AI provider API key is configured. Please provide at least one of: "
-                "GROQ_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY."
+                "GROQ_API_KEY, CEREBRAS_API_KEY, GITHUB_TOKEN (for GitHub Models), SAMBANOVA_API_KEY, "
+                "OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, ANTHROPIC_API_KEY."
             )
 
         # 0. Try user-supplied keys in order
@@ -106,7 +117,63 @@ class GroqClient:
                     continue
 
                 try:
-                    if u_provider == "gemini":
+                    if u_provider == "groq":
+                        logger.info(f"Trying user-provided Groq key (#{idx + 1})...")
+                        resp = await self._try_groq_custom_key(
+                            u_key,
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "cerebras":
+                        logger.info(f"Trying user-provided Cerebras key (#{idx + 1})...")
+                        resp = await self._try_cerebras(
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider in ("github_models", "github"):
+                        logger.info(f"Trying user-provided GitHub Models token (#{idx + 1})...")
+                        resp = await self._try_github_models(
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "sambanova":
+                        logger.info(f"Trying user-provided SambaNova key (#{idx + 1})...")
+                        resp = await self._try_sambanova(
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "gemini":
                         logger.info(f"Trying user-provided Gemini key (#{idx + 1})...")
                         resp = await self._try_gemini(
                             system_prompt, user_prompt, temperature, json_mode, custom_key=u_key
@@ -116,21 +183,54 @@ class GroqClient:
                     elif u_provider == "openrouter":
                         logger.info(f"Trying user-provided OpenRouter key (#{idx + 1})...")
                         resp = await self._try_openrouter(
-                            system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=u_key
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
                         )
                         if resp:
                             return resp
                     elif u_provider == "openai":
                         logger.info(f"Trying user-provided OpenAI key (#{idx + 1})...")
                         resp = await self._try_openai(
-                            system_prompt, user_prompt, temperature, json_mode, max_tokens, custom_key=u_key
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
                         )
                         if resp:
                             return resp
-                    elif u_provider == "groq":
-                        logger.info(f"Trying user-provided Groq key (#{idx + 1})...")
-                        resp = await self._try_groq_custom_key(
-                            u_key, system_prompt, user_prompt, temperature, json_mode, max_tokens
+                    elif u_provider == "mistral":
+                        logger.info(f"Trying user-provided Mistral key (#{idx + 1})...")
+                        resp = await self._try_mistral(
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
+                            frequency_penalty=frequency_penalty,
+                            presence_penalty=presence_penalty,
+                        )
+                        if resp:
+                            return resp
+                    elif u_provider == "anthropic":
+                        logger.info(f"Trying user-provided Anthropic key (#{idx + 1})...")
+                        resp = await self._try_anthropic(
+                            system_prompt,
+                            user_prompt,
+                            temperature,
+                            json_mode,
+                            max_tokens,
+                            custom_key=u_key,
                         )
                         if resp:
                             return resp
@@ -141,10 +241,9 @@ class GroqClient:
         if self._client:
             models_to_try = [self.model]
             for fb in [
-                "openai/gpt-oss-20b",
-                "groq/compound-mini",
                 "openai/gpt-oss-120b",
-                "groq/compound",
+                "qwen/qwen3.8-27b",
+                "openai/gpt-oss-20b",
             ]:
                 if fb not in models_to_try:
                     models_to_try.append(fb)
@@ -155,18 +254,22 @@ class GroqClient:
             ]
 
             for candidate_model in models_to_try:
+                safe_max_tokens = min(max_tokens or 2000, 3000)
+                if "qwen" in candidate_model.lower():
+                    safe_max_tokens = min(max_tokens or 800, 800)
+
                 base_kwargs: Dict[str, Any] = {
                     "messages": messages,
                     "temperature": temperature,
                     "model": candidate_model,
-                    "max_tokens": min(max_tokens or 2000, 3000),
+                    "max_tokens": safe_max_tokens,
                 }
+                if frequency_penalty is not None:
+                    base_kwargs["frequency_penalty"] = frequency_penalty
+                if presence_penalty is not None:
+                    base_kwargs["presence_penalty"] = presence_penalty
 
-                # If json_mode requested, attempt with response_format first, but if Groq's
-                # schema validator rejects with json_validate_failed (400), retry without response_format
-                # so our robust Python extract_json parser can extract the JSON payload.
                 modes = [True, False] if json_mode else [False]
-                success = False
                 for try_json in modes:
                     kwargs = dict(base_kwargs)
                     if try_json:
@@ -175,7 +278,8 @@ class GroqClient:
                         response = await self._client.chat.completions.create(**kwargs)
                         content = response.choices[0].message.content or ""
                         if content.strip():
-                            return content
+                            logger.info(f"Successfully received response from Groq model: {candidate_model}")
+                            return content.strip()
                     except Exception as e:
                         err_str = str(e)
                         if try_json and ("json_validate_failed" in err_str or "Failed to generate JSON" in err_str):
@@ -186,20 +290,52 @@ class GroqClient:
                         logger.warning(f"Groq model {candidate_model} call failed ({e}). Trying next candidate...")
                         break
 
-        # 2. Try OpenRouter (if configured)
-        if settings.OPENROUTER_API_KEY:
-            logger.info("Attempting OpenRouter provider...")
-            openrouter_resp = await self._try_openrouter(
+        # 2. Try Cerebras Cloud (if configured)
+        if settings.CEREBRAS_API_KEY:
+            logger.info("Attempting Cerebras Cloud provider...")
+            cerebras_resp = await self._try_cerebras(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=temperature,
                 json_mode=json_mode,
                 max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
             )
-            if openrouter_resp:
-                return openrouter_resp
+            if cerebras_resp:
+                return cerebras_resp
 
-        # 3. Try Gemini (if configured)
+        # 3. Try GitHub Models (free tier via GITHUB_MODELS_TOKEN or GITHUB_TOKEN)
+        if settings.GITHUB_MODELS_TOKEN or settings.GITHUB_TOKEN:
+            logger.info("Attempting GitHub Models provider...")
+            gh_models_resp = await self._try_github_models(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+            if gh_models_resp:
+                return gh_models_resp
+
+        # 4. Try SambaNova Cloud (if configured)
+        if settings.SAMBANOVA_API_KEY:
+            logger.info("Attempting SambaNova Cloud provider...")
+            sambanova_resp = await self._try_sambanova(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+            if sambanova_resp:
+                return sambanova_resp
+
+        # 5. Try Google Gemini (if configured)
         if settings.GEMINI_API_KEY:
             logger.info("Attempting Gemini provider...")
             gemini_resp = await self._try_gemini(
@@ -211,7 +347,22 @@ class GroqClient:
             if gemini_resp:
                 return gemini_resp
 
-        # 4. Try OpenAI (if configured)
+        # 6. Try OpenRouter (if configured)
+        if settings.OPENROUTER_API_KEY:
+            logger.info("Attempting OpenRouter provider...")
+            openrouter_resp = await self._try_openrouter(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                json_mode=json_mode,
+                max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+            )
+            if openrouter_resp:
+                return openrouter_resp
+
+        # 7. Try OpenAI (if configured)
         if settings.OPENAI_API_KEY:
             logger.info("Attempting OpenAI provider...")
             openai_resp = await self._try_openai(
@@ -220,11 +371,13 @@ class GroqClient:
                 temperature=temperature,
                 json_mode=json_mode,
                 max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
             )
             if openai_resp:
                 return openai_resp
 
-        # 5. Try Mistral (if configured)
+        # 8. Try Mistral (if configured)
         if settings.MISTRAL_API_KEY:
             logger.info("Attempting Mistral provider...")
             mistral_resp = await self._try_mistral(
@@ -233,11 +386,13 @@ class GroqClient:
                 temperature=temperature,
                 json_mode=json_mode,
                 max_tokens=max_tokens,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
             )
             if mistral_resp:
                 return mistral_resp
 
-        # 6. Try Anthropic (if configured)
+        # 9. Try Anthropic (if configured)
         if settings.ANTHROPIC_API_KEY:
             logger.info("Attempting Anthropic provider...")
             anthropic_resp = await self._try_anthropic(
@@ -257,6 +412,324 @@ class GroqClient:
             "Analysis halted: All configured AI providers rate limited or unavailable. Please retry in a few moments."
         )
 
+    async def _try_openai_compatible_provider(
+        self,
+        provider_name: str,
+        base_url: str,
+        api_key: str,
+        models: List[str],
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+        json_mode: bool = False,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        timeout: float = 25.0,
+    ) -> Optional[str]:
+        """Generic adapter executing completion requests against any OpenAI-compatible API endpoint."""
+        if not api_key:
+            return None
+
+        clean_base = base_url.rstrip("/")
+        endpoint = f"{clean_base}/chat/completions"
+
+        headers: Dict[str, str] = {
+            "Authorization": f"Bearer {api_key.strip()}",
+            "Content-Type": "application/json",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
+        seen = set()
+        for model in models:
+            if not model or model in seen:
+                continue
+            seen.add(model)
+
+            base_payload: Dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temperature,
+            }
+            if max_tokens:
+                base_payload["max_tokens"] = min(max_tokens, 3000)
+            if frequency_penalty is not None:
+                base_payload["frequency_penalty"] = frequency_penalty
+            if presence_penalty is not None:
+                base_payload["presence_penalty"] = presence_penalty
+
+            modes = [True, False] if json_mode else [False]
+            for try_json in modes:
+                payload = dict(base_payload)
+                if try_json:
+                    payload["response_format"] = {"type": "json_object"}
+
+                try:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        resp = await client.post(endpoint, headers=headers, json=payload)
+
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            choices = data.get("choices", [])
+                            if choices:
+                                content = choices[0].get("message", {}).get("content")
+                                if content and content.strip():
+                                    logger.info(
+                                        f"Successfully received response from {provider_name} model: {model}"
+                                    )
+                                    return content.strip()
+                        elif resp.status_code == 400 and try_json:
+                            # Many providers reject response_format with 400; retry without it
+                            err_text = resp.text.lower()
+                            if any(k in err_text for k in ["response_format", "json_object", "unsupported", "invalid"]):
+                                logger.warning(
+                                    f"{provider_name} {model} returned 400 on response_format. Retrying without it..."
+                                )
+                                continue
+                            logger.warning(f"{provider_name} {model} returned 400: {resp.text[:160]}")
+                            break
+                        elif resp.status_code == 429:
+                            logger.warning(f"{provider_name} {model} rate limited (HTTP 429). Trying next candidate...")
+                            break
+                        else:
+                            logger.warning(
+                                f"{provider_name} {model} returned status {resp.status_code}: {resp.text[:160]}"
+                            )
+                            break
+                except httpx.TimeoutException:
+                    logger.warning(f"{provider_name} {model} request timed out after {timeout}s.")
+                    break
+                except Exception as e:
+                    logger.warning(f"{provider_name} {model} request failed: {e}")
+                    break
+
+        return None
+
+    async def _try_cerebras(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """Cerebras Cloud inference (~2,000 tok/sec free tier)."""
+        effective_key = custom_key or settings.CEREBRAS_API_KEY
+        if not effective_key:
+            return None
+
+        models = [
+            settings.CEREBRAS_MODEL or "llama-3.3-70b",
+            "llama-3.3-70b",
+            "llama3.1-70b",
+            "llama3.1-8b",
+        ]
+        return await self._try_openai_compatible_provider(
+            provider_name="Cerebras",
+            base_url="https://api.cerebras.ai/v1",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=20.0,
+        )
+
+    async def _try_github_models(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """GitHub Models inference (free tier using GITHUB_MODELS_TOKEN or standard GITHUB_TOKEN)."""
+        effective_key = custom_key or settings.GITHUB_MODELS_TOKEN or settings.GITHUB_TOKEN
+        if not effective_key:
+            return None
+
+        models = [
+            settings.GITHUB_MODELS_MODEL or "gpt-4o-mini",
+            "gpt-4o-mini",
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-70b-instruct",
+            "gpt-4o",
+        ]
+        return await self._try_openai_compatible_provider(
+            provider_name="GitHub Models",
+            base_url="https://models.inference.ai.azure.com",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=25.0,
+        )
+
+    async def _try_sambanova(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """SambaNova Cloud inference (high-speed free tier Llama 3.3 70B)."""
+        effective_key = custom_key or settings.SAMBANOVA_API_KEY
+        if not effective_key:
+            return None
+
+        models = [
+            settings.SAMBANOVA_MODEL or "Meta-Llama-3.3-70B-Instruct",
+            "Meta-Llama-3.3-70B-Instruct",
+            "Meta-Llama-3.1-70B-Instruct",
+            "Meta-Llama-3.1-8B-Instruct",
+        ]
+        return await self._try_openai_compatible_provider(
+            provider_name="SambaNova",
+            base_url="https://api.sambanova.ai/v1",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=20.0,
+        )
+
+    async def _try_openrouter(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """Fallback to OpenRouter models."""
+        effective_key = custom_key or settings.OPENROUTER_API_KEY
+        if not effective_key:
+            return None
+
+        models = [
+            settings.OPENROUTER_MODEL or "openrouter/auto",
+            "openrouter/auto",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "liquid/lfm-2.5-2.6b:free",
+        ]
+        return await self._try_openai_compatible_provider(
+            provider_name="OpenRouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            extra_headers={
+                "HTTP-Referer": "https://doyoularp.com",
+                "X-Title": "doyoularp",
+            },
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=25.0,
+        )
+
+    async def _try_openai(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """Fallback to OpenAI models."""
+        effective_key = custom_key or settings.OPENAI_API_KEY
+        if not effective_key:
+            return None
+
+        models = [settings.OPENAI_MODEL or "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
+        return await self._try_openai_compatible_provider(
+            provider_name="OpenAI",
+            base_url="https://api.openai.com/v1",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=20.0,
+        )
+
+    async def _try_mistral(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        json_mode: bool,
+        max_tokens: Optional[int],
+        custom_key: Optional[str] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+    ) -> Optional[str]:
+        """Fallback to Mistral models."""
+        effective_key = custom_key or settings.MISTRAL_API_KEY
+        if not effective_key:
+            return None
+
+        models = [settings.MISTRAL_MODEL or "mistral-small-latest", "open-mistral-7b"]
+        return await self._try_openai_compatible_provider(
+            provider_name="Mistral",
+            base_url="https://api.mistral.ai/v1",
+            api_key=effective_key,
+            models=models,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            timeout=20.0,
+        )
+
     async def _try_groq_custom_key(
         self,
         custom_key: str,
@@ -265,6 +738,8 @@ class GroqClient:
         temperature: float,
         json_mode: bool,
         max_tokens: Optional[int],
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
     ) -> Optional[str]:
         """Try Groq models using user-supplied custom key."""
         try:
@@ -292,6 +767,10 @@ class GroqClient:
                     "model": candidate_model,
                     "max_tokens": min(max_tokens or 2000, 3000),
                 }
+                if frequency_penalty is not None:
+                    base_kwargs["frequency_penalty"] = frequency_penalty
+                if presence_penalty is not None:
+                    base_kwargs["presence_penalty"] = presence_penalty
 
                 modes = [True, False] if json_mode else [False]
                 for try_json in modes:
@@ -317,75 +796,6 @@ class GroqClient:
             logger.warning(f"Failed to initialize AsyncGroq with user custom key: {e}")
         return None
 
-    async def _try_openrouter(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float,
-        json_mode: bool,
-        max_tokens: Optional[int],
-        custom_key: Optional[str] = None,
-    ) -> Optional[str]:
-        """Fallback to OpenRouter models."""
-        effective_key = custom_key or settings.OPENROUTER_API_KEY
-        if not effective_key:
-            return None
-
-        models = [
-            settings.OPENROUTER_MODEL or "google/gemma-4-31b-it:free",
-            "google/gemma-4-31b-it:free",
-            "nvidia/nemotron-3-super-120b-a12b:free",
-            "nvidia/nemotron-3.5-lightning:free",
-            "google/gemma-4-26b-a4b-it:free",
-            "liquid/lfm-2.5-2.6b:free",
-        ]
-        headers = {
-            "Authorization": f"Bearer {effective_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://doyoularp.com",
-            "X-Title": "doyoularp",
-        }
-
-        seen = set()
-        for model in models:
-            if model in seen:
-                continue
-            seen.add(model)
-
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": temperature,
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-            if max_tokens:
-                payload["max_tokens"] = min(max_tokens, 2500)
-
-            try:
-                async with httpx.AsyncClient(timeout=25.0) as client:
-                    resp = await client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if choices:
-                            content = choices[0].get("message", {}).get("content")
-                            if content:
-                                logger.info(f"Successfully received response from OpenRouter model: {model}")
-                                return content
-                    else:
-                        logger.warning(f"OpenRouter {model} returned status {resp.status_code}: {resp.text[:150]}")
-            except Exception as e:
-                logger.warning(f"OpenRouter {model} request failed: {e}")
-        return None
-
     async def _try_gemini(
         self,
         system_prompt: str,
@@ -403,10 +813,8 @@ class GroqClient:
             settings.GEMINI_MODEL or "gemini-3.6-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
-            "gemini-3.7-flash",
-            "gemini-flash-latest",
-            "gemini-3.5-flash-lite",
             "gemini-2.5-flash",
+            "gemini-flash-latest",
         ]
 
         seen = set()
@@ -445,7 +853,7 @@ class GroqClient:
                 logger.warning(f"Gemini {model} request failed: {e}")
         return None
 
-    async def _try_openai(
+    async def _try_anthropic(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -454,128 +862,14 @@ class GroqClient:
         max_tokens: Optional[int],
         custom_key: Optional[str] = None,
     ) -> Optional[str]:
-        """Fallback to OpenAI models."""
-        effective_key = custom_key or settings.OPENAI_API_KEY
-        if not effective_key:
-            return None
-
-        models = [settings.OPENAI_MODEL or "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
-        headers = {
-            "Authorization": f"Bearer {effective_key}",
-            "Content-Type": "application/json",
-        }
-        seen = set()
-        for model in models:
-            if model in seen:
-                continue
-            seen.add(model)
-
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": temperature,
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-            if max_tokens:
-                payload["max_tokens"] = min(max_tokens, 2500)
-
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if choices:
-                            content = choices[0].get("message", {}).get("content")
-                            if content:
-                                logger.info(f"Successfully received response from OpenAI model: {model}")
-                                return content
-                    else:
-                        logger.warning(f"OpenAI {model} returned status {resp.status_code}: {resp.text[:150]}")
-            except Exception as e:
-                logger.warning(f"OpenAI {model} request failed: {e}")
-        return None
-
-    async def _try_mistral(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float,
-        json_mode: bool,
-        max_tokens: Optional[int],
-    ) -> Optional[str]:
-        """Fallback to Mistral models."""
-        if not settings.MISTRAL_API_KEY:
-            return None
-
-        models = [settings.MISTRAL_MODEL or "mistral-small-latest", "open-mistral-7b"]
-        headers = {
-            "Authorization": f"Bearer {settings.MISTRAL_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        seen = set()
-        for model in models:
-            if model in seen:
-                continue
-            seen.add(model)
-
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": temperature,
-            }
-            if json_mode:
-                payload["response_format"] = {"type": "json_object"}
-            if max_tokens:
-                payload["max_tokens"] = min(max_tokens, 2000)
-
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.post(
-                        "https://api.mistral.ai/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if choices:
-                            content = choices[0].get("message", {}).get("content")
-                            if content:
-                                logger.info(f"Successfully received response from Mistral model: {model}")
-                                return content
-                    else:
-                        logger.warning(f"Mistral {model} returned status {resp.status_code}: {resp.text[:150]}")
-            except Exception as e:
-                logger.warning(f"Mistral {model} request failed: {e}")
-        return None
-
-    async def _try_anthropic(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float,
-        json_mode: bool,
-        max_tokens: Optional[int],
-    ) -> Optional[str]:
         """Fallback to Anthropic models."""
-        if not settings.ANTHROPIC_API_KEY:
+        effective_key = custom_key or settings.ANTHROPIC_API_KEY
+        if not effective_key:
             return None
 
         models = [settings.ANTHROPIC_MODEL or "claude-3-5-haiku-20241022", "claude-3-haiku-20240307"]
         headers = {
-            "x-api-key": settings.ANTHROPIC_API_KEY,
+            "x-api-key": effective_key,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
@@ -617,7 +911,6 @@ class GroqClient:
             return {}
 
         text = text.strip()
-        # Look for markdown json code block
         code_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
         if code_match:
             text = code_match.group(1).strip()
@@ -625,7 +918,6 @@ class GroqClient:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Try to find { ... } or [ ... ]
             obj_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
             if obj_match:
                 try:
@@ -633,14 +925,12 @@ class GroqClient:
                 except Exception:
                     pass
 
-            # Try auto-closing open structures
             for suffix in [']}', '}', '"]}', '"]}']:
                 try:
                     return json.loads(text + suffix)
                 except Exception:
                     pass
 
-            # Recover completed claims objects from truncated JSON array
             claims = []
             matches = re.finditer(r'\{[^{}]*"claim_text"\s*:\s*"([^"]+)"[^{}]*\}', text)
             for m in matches:
@@ -652,7 +942,6 @@ class GroqClient:
             if claims:
                 return {"claims": claims}
 
-            # Recover completed evaluations objects from truncated JSON array
             evals = []
             matches_eval = re.finditer(r'\{[^{}]*"claim_id"\s*:\s*"?[^"]+"?[^{}]*\}', text)
             for m in matches_eval:
