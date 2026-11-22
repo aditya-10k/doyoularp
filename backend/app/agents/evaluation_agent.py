@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -727,9 +728,11 @@ class EvaluationAgent:
         if bullshit_check:
             return bullshit_check
 
-        # Fast path: System 1 NLI Cross-Encoder (~10ms CPU inference)
+        # Fast path: System 1 Reflex Triage (Groq 8B / Qwen fast tier & deterministic anchors)
         if self.system1 and self.system1.is_available:
             s1_verdict = self.system1.triage_claim(claim_text, retrieved_chunks, claim_meta=claim_meta)
+            if s1_verdict is None and hasattr(self.system1, "triage_claim_async"):
+                s1_verdict = await self.system1.triage_claim_async(claim_text, retrieved_chunks, claim_meta=claim_meta)
             if s1_verdict:
                 return s1_verdict
 
@@ -879,16 +882,28 @@ class EvaluationAgent:
                 remaining_projects.append((claim, chunks))
         projects = remaining_projects
 
-        # 2b. Fast path: System 1 NLI Cross-Encoder (~10ms CPU inference)
+        # 2b. Fast path: System 1 Reflex Triage (Groq 8B / Qwen fast tier & deterministic anchors)
         if self.system1 and self.system1.is_available and projects:
             s1_unresolved = []
-            for claim, chunks in projects:
-                claim_meta = getattr(claim, "meta", {}) or {}
-                s1_res = self.system1.triage_claim(claim.claim_text, chunks, claim_meta=claim_meta)
-                if s1_res:
-                    results.append((claim, s1_res))
+
+            async def _triage_one(c, chunks):
+                cm = getattr(c, "meta", {}) or {}
+                res = self.system1.triage_claim(c.claim_text, chunks, claim_meta=cm)
+                if res is None and hasattr(self.system1, "triage_claim_async"):
+                    res = await self.system1.triage_claim_async(c.claim_text, chunks, claim_meta=cm)
+                return c, chunks, res
+
+            triage_tasks = [_triage_one(c, chunks) for c, chunks in projects]
+            triage_results = await asyncio.gather(*triage_tasks, return_exceptions=True)
+            for res_item in triage_results:
+                if isinstance(res_item, tuple):
+                    c, chunks, s1_res = res_item
+                    if s1_res:
+                        results.append((c, s1_res))
+                    else:
+                        s1_unresolved.append((c, chunks))
                 else:
-                    s1_unresolved.append((claim, chunks))
+                    logger.warning(f"Error during System 1 triage: {res_item}")
             projects = s1_unresolved
 
         # 3. If no project/experience claims remain, return immediately
@@ -956,7 +971,6 @@ class EvaluationAgent:
                 logger.warning(f"Mini-batch evaluation fallback for batch {batch_offset}: {e}")
 
         # Run batches sequentially to maximize token capacity and prevent concurrent TPM/RPM spikes
-        import asyncio
         for offset, b in zip(range(0, len(projects), batch_size), mini_batches):
             await eval_mini_batch(offset, b)
             if len(mini_batches) > 1:

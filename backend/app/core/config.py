@@ -48,11 +48,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-3-5-haiku-20241022"
 
-    # System 1: Local Fast NLI Cross-Encoder (ONNX Runtime)
+    # System 1: Fast Reflex Triage (Groq Fast Tier / Deterministic Anchors)
     ENABLE_SYSTEM1: bool = True
     SYSTEM1_ALLOW_CONTRADICTION: bool = False  # Keep triage contradiction off by default to prevent false negatives on partial chunks
     SYSTEM1_MODEL_PATH: Optional[str] = None
-    SYSTEM1_MODEL_NAME: str = "Xenova/nli-deberta-v3-small"
+    SYSTEM1_MODEL_NAME: str = "qwen/qwen3.8-27b"  # Fast reflex model (Groq 8B / Qwen)
     SYSTEM1_ENTAILMENT_THRESHOLD: float = 0.70
     SYSTEM1_CONTRADICTION_THRESHOLD: float = 0.88
 
